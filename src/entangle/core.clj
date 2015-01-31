@@ -11,8 +11,10 @@
             [clj-diff.core :as diff]))
 
 (defn empty-patch?
+  "Needs work."
   [patch]
-  (= patch {:+ [], :- []}))
+  (or (empty? patch)
+      (= patch {:+ [], :- []})))
 
 (defn rebase
   "Rebases the current state against head after applying patch."
@@ -23,8 +25,8 @@
       (diff/patch working-changes))))
 
 (defn start-sync
-  "Start synchronization of atoms where data-in is a channel of incoming diffs
-  and data-out is a channel to write changes to. This ref should be an atom.
+  "Start synchronization of atoms whose state changes are propogated when it's
+  state changes or when a patch is sent via data-in.
 
   Returns a channel which produces 'true' when both sender & receiver are in
   full sync.
@@ -56,63 +58,3 @@
                          (a/>! data-out patch)
                          (recur new-state)))))
      synced-ch)))
-
-
-(test/deftest state-change-handling
-  (let [data-in (a/chan 1)
-        data-out (a/chan 1)
-        state (atom "")
-        ack (start-sync state data-in data-out 1)]
-
-    (test/testing "Changing an atom sends the patches to the other side"
-      (a/go (swap! state #(str % "foo")))
-      (test/is (= (diff/diff "" "foo") (a/<!! data-out))))
-
-    (test/testing "Sending a patch to the state alters it's value"
-      (a/>!! data-in (diff/diff "foo" "foobar"))
-      (a/<!! ack)
-      (test/is (= @state "foobar")))))
-
-(test/deftest entangling-two-atoms
-  (let [A->B (a/chan 1) B->A (a/chan 1)
-        stateA (atom "")
-        stateB (atom "")
-        ackA (start-sync stateA B->A A->B 1)
-        ackB (start-sync stateB A->B B->A 2)]
-
-    (test/testing "Changing an atoms value updates the other"
-      (swap! stateA (fn [thing] (str thing "foo")))
-      (a/alts!! [ackB])
-      (a/alts!! [ackA])
-      (test/is (= "foo" @stateB))
-
-      (reset! stateB "bar")
-      (a/alts!! [ackA])
-      (a/alts!! [ackB])
-      (test/is (= "bar" @stateA)))
-
-    (test/testing "Changes to the same atom twice work"
-      (reset! stateA "a")
-      (a/alts!! [ackB])
-      (a/alts!! [ackA])
-      (reset! stateA "b")
-      (a/alts!! [ackB])
-      (a/alts!! [ackA])
-      (reset! stateA "c")
-      (a/alts!! [ackB])
-      (a/alts!! [ackA])
-      (test/is (= "c" @stateB)))
-      ))
-
-(defn test-ns-hook
-  "Tests to run on this hook"
-  []
-  (state-change-handling)
-  (entangling-two-atoms)
-  )
-
-(defn run-tests
-  "Bound the tests to under 1 second"
-  []
-  (let [f (future (test/run-tests))]
-    (.get f 3000 java.util.concurrent.TimeUnit/MILLISECONDS)))
