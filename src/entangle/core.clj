@@ -8,7 +8,8 @@
 (ns entangle.core
   (:require [clojure.core.async :as a]
             [clojure.test :as test]
-            [clj-diff.core :as diff]))
+            [clj-diff.core :as diff]
+            [clojure.tools.logging :as log]))
 
 (defn empty-patch?
   "Needs work."
@@ -41,17 +42,24 @@
    (let [cur-value @ref
          user-changes (a/chan)
          synced-ch (a/chan (a/sliding-buffer 1))]
-     (add-watch ref :diff-sync #(future (a/>!! user-changes %&)))
+     (add-watch ref :diff-sync #(a/>!! user-changes %&))
      (a/go-loop [shadow cur-value]
        (a/alt!
          data-in ([patch ch]
-                  ;; (println (str  id " patch " patch ":" shadow))
+                  (log/debug (str  id " patch " patch ":" shadow))
+
+                  ;; If an empty patch comes through, we're fully synced
                   (if (empty-patch? patch)
                     (a/>! synced-ch true)
-                    (a/thread (swap! ref rebase shadow patch)))
+
+                    ;; otherwise, perform an update to this ref (through some other control)
+                    (future (swap! ref rebase shadow patch)))
+
+
                   (recur (diff/patch shadow patch)))
+
          user-changes ([[key ref old-state new-state] ch]
-                       ;; (println (str id " watch " key ":" ref ":" old-state ":" new-state ":" shadow))
+                       (log/debug (str id " watch " key ":" ref ":" old-state ":" new-state ":" shadow))
                        (let [patch (diff/diff shadow new-state)]
                          (when (empty-patch? patch)
                            (a/>! synced-ch true))

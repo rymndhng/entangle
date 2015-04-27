@@ -11,12 +11,12 @@
         ack (start-sync state data-in data-out 1)]
 
     (testing "Changing an atom sends the patches to the other side"
-      (a/go (swap! state #(str % "foo")))
+      (swap! state #(str % "foo"))
       (is (= (diff/diff "" "foo") (a/<!! data-out))))
 
     (testing "Sending a patch to the atom eventually alters it's value"
       (a/>!! data-in (diff/diff "foo" "foobar"))
-      (a/<!! ack)
+      (a/<!! data-out)
       (is (= @state "foobar")))))
 
 (deftest entangling-two-atoms
