@@ -1,5 +1,4 @@
 ;; Step 1: Implement a single atom which is multiplexed over an aleph manifold
-
 (ns entangle.single
   (:require
    [compojure.core :as compojure :refer [GET]]
@@ -12,7 +11,27 @@
    [manifold.deferred :as d]
    [clojure.core.async :as a]
    [clojure.edn :as edn]
-   [entangle.core :as e]))
+   [entangle.core :as e]
+   [taoensso.timbre :as timbre]
+   [hiccup.core :as h]))
+
+(def homepage
+  (h/html
+    [:html
+     [:head
+      [:link {:rel "stylesheet" :href "https://maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css"}]
+      [:script {:type "text/javascript" :src "public/js/out/goog/base.js"}]
+      [:script {:type "text/javascript" :src "public/js/app.js"}]
+      [:script {:type "text/javascript"} "goog.require('entangle.core');"]
+      ]
+     [:body
+      [:h1 "Hello, Start Syncing?"]
+      [:input {:id "form-name" :name "name" :placeholder "What is your name?"}]
+      [:input.btn.btn-primary {:id "start-btn":type "button" :value "Start"}]
+      [:br]
+      [:textarea {:cols 80 :rows 10}]
+      ]
+     ]))
 
 ; An entangle is a single atom to sync
 (def entangle-atom (atom ""))
@@ -23,24 +42,14 @@
 
 (e/start-sync entangle-atom changes-in changes-out "Single Atom Sync")
 
-;; Watch for messages to be tapped in and out
-#_(let [tap-in (a/chan)
-      tap-out (a/chan)]
-  (a/tap changes-in tap-in)
-  (a/tap changes-out tap-out)
-  (a/go-loop []
-    (let [[message port] (a/alts! [tap-in tap-out])
-          port-name (if (= tap-in port) "Into Atom" "Out of Atom")]
-      (println port-name ":" message)
-      )
-    (recur)))
-
-
+;; Simple web handler
 (defn web-handler [_]
   {:status 200
    :headers {"content-type" "text/html"}
-   :body "Join me!"})
+   :body homepage})
 
+
+;; Handler for aleph websockets
 (defn sync-handler
   [req]
   (d/let-flow [conn (d/catch (http/websocket-connection req)
@@ -51,7 +60,6 @@
        :body "Expected a websocket request."}
 
       (d/let-flow [init-message (s/take! conn)]
-        (println "Got: " init-message)
 
         ;; deserialize data, write into entangle
         (s/connect
@@ -62,12 +70,12 @@
         ;; TODO: does this cause deadlock if the channel gacks?
         (s/connect
           (s/transform
-            (map (fn [x]
-                   (println x)
-                   (pr-str x))) changes-out)
+            (map (fn [diff]
+                   (timbre/debug "Server sending:" diff)
+                   (pr-str diff))) changes-out)
           conn)
-
-        (println "Connected successfully")))))
+        (timbre/debug "Client connected: " init-message)
+        ))))
 
 ;; Create the aleph server to synchronize with
 (def handler
@@ -75,24 +83,44 @@
     (compojure/routes
       (GET "/sync" [] sync-handler)
       (GET "/" [] web-handler)
+      (route/resources "/public")
       (route/not-found "No such page."))))
 
-(comment
-  (.close s)
-  (def s (http/start-server handler {:port 10000}))
-  )
+;; This is an instance of a server that we will lookup later
+(def s nil)
 
-;; Let's create some tests
-(comment
+(defn start
+  "Starts the server. If it already exists, shuts it down and then
+  starts it up again"
+  []
+  (when s (.close s))
+  (def s (http/start-server handler {:port 10000})))
 
+;; Check that things are actually working
+(comment
+  (start)
   (future
     (def ws-atom (atom ""))
+    (def ws-in (a/chan))
+    (def ws-out (a/chan))
+    (e/start-sync ws-atom ws-in ws-out)
+
     (def remote-conn @(http/websocket-client "ws://localhost:10000/sync"))
+    (s/connect
+      (s/transform (map edn/read-string) remote-conn)
+      ws-in)
+    (s/connect
+      (s/transform
+        (map (fn [x]
+               (println "remote:" x)
+               (pr-str x))) ws-out)
+      remote-conn)
 
     ;; write a diff message into the websocket
     (s/put! remote-conn "HERRO")
     (s/put! remote-conn (str (clj-diff.core/diff  "" "FOO-BAR")))
-    (def result (s/take! remote-conn)))
-
+    (def result (s/take! remote-conn))
+    )
+  (= @entangle-atom @ws-atom)
   (s/close! remote-conn)
 )
