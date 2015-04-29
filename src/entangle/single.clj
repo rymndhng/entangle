@@ -22,7 +22,7 @@
       [:link {:rel "stylesheet" :href "https://maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css"}]
       [:script {:type "text/javascript" :src "public/js/out/goog/base.js"}]
       [:script {:type "text/javascript" :src "public/js/app.js"}]
-      [:script {:type "text/javascript"} "goog.require('entangle.core');"]
+      [:script {:type "text/javascript"} "goog.require('entangle.client');"]
       ]
      [:body
       [:h1 "Hello, Start Syncing?"]
@@ -86,15 +86,13 @@
       (route/resources "/public")
       (route/not-found "No such page."))))
 
-;; This is an instance of a server that we will lookup later
-(def s nil)
-
 (defn start
   "Starts the server. If it already exists, shuts it down and then
   starts it up again"
   []
-  (when s (.close s))
-  (def s (http/start-server handler {:port 10000})))
+  (when (resolve 's)
+    (.close s))
+  (def s (http/start-server handler {:port 10001})))
 
 ;; Check that things are actually working
 (comment

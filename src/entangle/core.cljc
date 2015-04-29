@@ -6,10 +6,17 @@
 ;;
 ;; This library uses core.async and clj-diff
 (ns entangle.core
-  (:require [clojure.core.async :as a]
-            [clojure.test :as test]
-            [clj-diff.core :as diff]
-            [taoensso.timbre :as timbre]))
+  #?@(:clj
+      [(:require [clojure.core.async :as a :refer [go-loop alt!]]
+                 [clj-diff.core :as diff]
+                 [taoensso.timbre :as timbre])]
+      :cljs
+      [(:require-macros [cljs.core.async.macros :refer [go-loop alt!]])
+       (:require [cljs.core.async :as a])]
+                 [clj-diff.core :as diff]
+      ))
+
+#?(:clj (timbre/set-level! :warn))
 
 (defn empty-patch?
   "Needs work."
@@ -43,10 +50,10 @@
          user-changes (a/chan)
          synced-ch (a/chan (a/sliding-buffer 1))]
      (add-watch ref :diff-sync #(a/>!! user-changes %&))
-     (a/go-loop [shadow cur-value]
-       (a/alt!
+     (go-loop [shadow cur-value]
+       (alt!
          data-in ([patch ch]
-                  (timbre/debug id " patch " patch ":" shadow)
+                  #?(:clj (timbre/debug :default println id " patch " patch ":" shadow))
 
                   ;; If an empty patch comes through, we're fully synced
                   (if (empty-patch? patch)
@@ -59,7 +66,7 @@
                   (recur (diff/patch shadow patch)))
 
          user-changes ([[key ref old-state new-state] ch]
-                       (timbre/debug id " watch " key ":" ref ":" old-state ":" new-state ":" shadow)
+                       #?(:clj (timbre/debug id " watch " key ":" ref ":" old-state ":" new-state ":" shadow) )
                        (let [patch (diff/diff shadow new-state)]
                          (when (empty-patch? patch)
                            (a/>! synced-ch true))

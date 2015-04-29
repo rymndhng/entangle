@@ -1,5 +1,6 @@
-(ns entangle.core
-  (:require [figwheel.client :as fw]))
+(ns entangle.client
+  (:require [figwheel.client :as fw]
+            [entangle.core :as e]))
 
 (enable-console-print!)
 
@@ -24,3 +25,7 @@
            ;; the client to focus on
            ;; :build-id "example"
            })
+
+(defonce content (atom ""))
+
+(e/start-sync atom "bar" "baz")
