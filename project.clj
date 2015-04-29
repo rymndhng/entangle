@@ -6,6 +6,7 @@
   :dependencies [[org.clojure/clojure "1.7.0-beta1"]
                  [org.clojure/core.async "0.1.346.0-17112a-alpha"]
                  [clj-diff "1.0.0-SNAPSHOT"]
+                 [com.taoensso/timbre "3.4.0"]
 
                  ;; TODO: move these out once I get the sample project going
                  [aleph "0.4.0"]

@@ -9,7 +9,7 @@
   (:require [clojure.core.async :as a]
             [clojure.test :as test]
             [clj-diff.core :as diff]
-            [clojure.tools.logging :as log]))
+            [taoensso.timbre :as timbre]))
 
 (defn empty-patch?
   "Needs work."
@@ -46,7 +46,7 @@
      (a/go-loop [shadow cur-value]
        (a/alt!
          data-in ([patch ch]
-                  (log/debug (str  id " patch " patch ":" shadow))
+                  (timbre/debug id " patch " patch ":" shadow)
 
                   ;; If an empty patch comes through, we're fully synced
                   (if (empty-patch? patch)
@@ -59,7 +59,7 @@
                   (recur (diff/patch shadow patch)))
 
          user-changes ([[key ref old-state new-state] ch]
-                       (log/debug (str id " watch " key ":" ref ":" old-state ":" new-state ":" shadow))
+                       (timbre/debug id " watch " key ":" ref ":" old-state ":" new-state ":" shadow)
                        (let [patch (diff/diff shadow new-state)]
                          (when (empty-patch? patch)
                            (a/>! synced-ch true))
