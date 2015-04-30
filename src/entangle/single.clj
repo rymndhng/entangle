@@ -86,17 +86,10 @@
       (route/resources "/public")
       (route/not-found "No such page."))))
 
-(defn start
-  "Starts the server. If it already exists, shuts it down and then
-  starts it up again"
-  []
-  (when (resolve 's)
-    (.close s))
-  (def s (http/start-server handler {:port 10001})))
-
 ;; Check that things are actually working
 (comment
-  (start)
+  (def s (http/start-server handler {:port 10000}))
+  (.close s)
   (future
     (def ws-atom (atom ""))
     (def ws-in (a/chan))
