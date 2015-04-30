@@ -1,6 +1,8 @@
 (ns entangle.client
   (:require [figwheel.client :as fw]
-            [entangle.core :as e]))
+            [entangle.core :as e]
+            [cljs.core.async :as a])
+  (:require-macros [cljs.core.async.macros :refer [go]]))
 
 (enable-console-print!)
 
@@ -26,6 +28,28 @@
            ;; :build-id "example"
            })
 
-(defonce content (atom ""))
+(defonce client-state
+  (atom {:textarea-in (a/chan)
+         :textarea-out (a/chan)}))
 
-(e/start-sync atom "bar" "baz")
+(defonce textarea (atom ""))
+
+
+(println "foo")
+
+;; Tell us when we're synced. This would be interesting to know
+(let [synced-ch (e/start-sync textarea
+                  (@client-state :textarea-in)
+                  (@client-state :textarea-out))]
+  (go (loop []
+        (a/<! synced-ch)
+        (println "I am Synced.")
+        (recur))))
+
+;; Setup some websocket stuff
+(def websocket* (atom nil))
+
+(defn- main []
+  (log "main")
+  (log "establishing websocket...")
+  (reset! websocket* (js/WebSocket. "ws://localhost:10000/sync")))
