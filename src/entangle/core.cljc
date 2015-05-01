@@ -7,13 +7,13 @@
 ;; This library uses core.async and clj-diff
 (ns entangle.core
   #?@(:clj
-      [(:require [clojure.core.async :as a :refer [go-loop alt!]]
+      [(:require [clojure.core.async :as a :refer [go go-loop alt!]]
                  [clj-diff.core :as diff]
                  [taoensso.timbre :as timbre])]
       :cljs
-      [(:require-macros [cljs.core.async.macros :refer [go-loop alt!]])
-       (:require [cljs.core.async :as a])]
-                 [clj-diff.core :as diff]
+      [(:require-macros [cljs.core.async.macros :refer [go go-loop alt!]])
+       (:require [cljs.core.async :as a]
+                 [clj-diff.core :as diff])]
       ))
 
 #?(:clj (timbre/set-level! :warn))
@@ -49,7 +49,7 @@
    (let [cur-value @ref
          user-changes (a/chan)
          synced-ch (a/chan (a/sliding-buffer 1))]
-     (add-watch ref :diff-sync #(a/>!! user-changes %&))
+     (add-watch ref :diff-sync #(go (a/>! user-changes %&)))
      (go-loop [shadow cur-value]
        (alt!
          data-in ([patch ch]
@@ -59,8 +59,8 @@
                   (if (empty-patch? patch)
                     (a/>! synced-ch true)
 
-                    ;; otherwise, perform an update to this ref (through some other control)
-                    (future (swap! ref rebase shadow patch)))
+                    ;; We can use swap because add-watch's callback is async as well
+                    (swap! ref rebase shadow patch))
 
 
                   (recur (diff/patch shadow patch)))
