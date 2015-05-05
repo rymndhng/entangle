@@ -8,7 +8,7 @@
   (let [data-in (a/chan 1)
         data-out (a/chan 1)
         state (atom "")
-        ack (start-sync state data-in data-out)]
+        ack (start-sync state data-in data-out :state-change-handling)]
 
     (testing "Changing an atom sends the patches to the other side"
       (reset! state "foo")
@@ -32,8 +32,8 @@
   (let [A->B (a/chan 1) B->A (a/chan 1)
         stateA (atom "")
         stateB (atom "")
-        ackA (start-sync stateA B->A A->B 0 :atom-a)
-        ackB (start-sync stateB A->B B->A 0 :atom-b)]
+        ackA (start-sync stateA B->A A->B :atom-a)
+        ackB (start-sync stateB A->B B->A :atom-b)]
 
     (testing "Changing an atoms value updates the other"
       (swap! stateA (fn [thing] (str thing "foo")))
@@ -46,17 +46,31 @@
       (is (= "bar" @stateA) "Reseting stateB will update stateA")
       )
 
-    (testing "Changes to the same atom twice work"
-      (reset! stateA "a")
+    (testing "Changes to the atoms keep working"
+      (reset! stateA "FOO")
       (a/<!! ackB)
       (a/<!! ackA)
-      (reset! stateA "b")
+      (is (= "FOO" @stateB))
+
+      (reset! stateA "FOOBAR")
       (a/<!! ackB)
       (a/<!! ackA)
-      (reset! stateA "c")
+      (is (= "FOOBAR" @stateB))
+
+      (reset! stateA "FOO")
       (a/<!! ackB)
       (a/<!! ackA)
-      (is (= "c" @stateB)))
+      (is (= "FOO" @stateB))
+
+      (reset! stateB "HELLO")
+      (a/<!! ackB)
+      (a/<!! ackA)
+      (is (= "HELLO" @stateA))
+
+      (reset! stateB "HOW ARE YOU")
+      (a/<!! ackB)
+      (a/<!! ackA)
+      (is (= "HOW ARE YOU" @stateA)))
 
 
     (a/close! A->B)))

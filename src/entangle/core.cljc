@@ -58,21 +58,20 @@
   ref      - the reference object to synchronize
   data-in  - core.async channel for writing patches to
   data-out - core.async channel for reading patches from
-  version  - initial counter for the patch version applied
   id       - id for debugging
 
   TODO: this is broken because there's no concept of version numbering
   "
-  ([ref data-in data-out] (start-sync ref data-in data-out 0 nil))
-  ([ref data-in data-out version id]
-   (let [init-state   @ref
+  ([ref data-in data-out id]
+   (let [watch-id (gensym :diff-sync)
+         init-state   @ref
          user-changes (a/chan)
          synced-ch    (a/chan (a/sliding-buffer 1))]
-     (add-watch ref :diff-sync #(go (a/>! user-changes %&)))
+     (add-watch ref watch-id #(go (a/>! user-changes %&)))
      (go-loop [shadow        init-state
                backup-shadow init-state
-               local-version version
-               ack-version version]
+               local-version 0
+               ack-version 0]
        #?(:clj (timbre/debug id "Start: "
                  shadow \, backup-shadow \, local-version \, ack-version))
        (let [cur-state [shadow backup-shadow local-version ack-version]
@@ -123,7 +122,7 @@
            ;; cleanup otherwise
            (do
              #?(:clj (timbre/debug id "entangle shutting down... "))
-             (remove-watch ref :diff-sync)
+             (remove-watch ref watch-id)
              (doall (map a/close! [data-in data-out synced-ch]))
              #?(:clj (timbre/debug "entangle finished ... " id))))))
      synced-ch)))

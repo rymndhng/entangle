@@ -5,10 +5,10 @@
             [cljs.reader :as reader])
   (:require-macros [cljs.core.async.macros :refer [go]]))
 
-(defn log [m]
-  (.log js/console m))
+(defn log [m] (println m))
 
-(enable-console-print!)
+(fw/enable-repl-print!)
+; (enable-console-print!)
 
 (fw/start {
            ;; configure a websocket url if you are using your own server
@@ -32,66 +32,65 @@
            ;; :build-id "example"
            })
 
-(defonce client-state
-  (atom {:textarea-in (a/chan)
-         :textarea-out (a/chan)}))
-
 (defonce textarea (atom ""))
 
 ;; Setup some websocket stuff
 (defonce websocket* (atom nil))
 
 (defn- main []
-  (let [ws-chan (a/chan)]
+  (let [ws-chan (a/chan)
+        data-in (a/chan)
+        data-out (a/chan)]
     ;; Do the websocket dance
-    (.log js/console "main")
-    (.log js/console "establishing websocket...")
+    (log "main")
+    (log "establishing websocket...")
     (reset! websocket* (js/WebSocket. "ws://localhost:10000/sync"))
 
     ;; Setup the websocket object to respond to the messages
     (doall
       (map #(aset @websocket* (first %) (second %))
-        [["onopen"    (fn []  (log "... websocket established!"))]
-         ["onclose"   (fn []  (log "... websocket closed!"))]
-         ["onerror"   (fn [e] (log (str "WS-ERROR:" e)))]
-         ["onmessage" (fn [m] (go (a/>! ws-chan m)))]]))
+        [["onopen"    (fn []
+                        (log "... websocket established!")
+                        ;; send the name in
+                        (.send @websocket* "HERROE!"))]
+         ["onclose"   (fn []
+                        (log "... websocket closed!")
+                        (a/close! data-in))]
+         ["onerror"   (fn [e]
+                        (log (str "WS-ERROR:" e))
+                        (a/close! data-in))]
+         ["onmessage" (fn [m]
+                        (log (str "GOT:" (aget m "data")))
+                        (go (a/>! ws-chan (aget m "data"))))]]))
 
     ;; Setup the first go-routine that reads messages from the websocket channel
     (go
-      ;; Take the first message off ws-chan and print it
-      (log (str "Handshake:" (a/<! ws-chan)))
+      ;; Take the first message off ws-chan and use it to setup the initial state
+      (let [initial-state (a/<! ws-chan)]
+        (log (str "Initial State:" initial-state))
+        (reset! textarea initial-state)
 
-      ;; Pre-process data before sending it off
-      (a/pipeline 1
-        (:textarea-in @client-state)
-        (map reader/read-string)
-        ws-chan))
+        ;; TODO: rework the frontend so we can easily notify when synced
+        (e/start-sync textarea
+          data-in
+          data-out
+          "webclient"))
 
-    ;; Setup another go-routine that reads messages from data-out and syncs it
+      ;; pipeline the rest into textarea
+      (a/pipeline 1 data-in (map reader/read-string) ws-chan))
+
+    ;; Setup another go-routine that prepares data for outward flow
     (go (loop []
-          (let [data (a/<! (:textarea-out @client-state))]
+          (let [data (a/<! data-out)]
             (log (str "Sending diff to ws: " data))
             (.send @websocket* (pr-str data)))
-          (recur))))
+          (recur)))
 
-  (log "set all fields")
-
-  (aset js/window "onunload"
-    (fn []
-      (.close @websocket*)
-      (reset! @websocket* nil)))
-
-  (log "unloaded")
-
-  ;; Time to setup some data synchronization
-  (let [synced-ch (e/start-sync textarea
-                    (@client-state :textarea-in)
-                    (@client-state :textarea-out))]
-
-    ;; Tell us when we're synced. This would be interesting to know
-    (go (loop []
-          (a/<! synced-ch)
-          (println "I am Synced.")
-          (recur))))
+    (aset js/window "onunload"
+      (fn []
+        (log "unloading")
+        (a/close! data-in)
+        (.close @websocket*)
+        (reset! @websocket* nil))))
 
   (log "ready to go"))

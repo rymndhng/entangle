@@ -33,14 +33,8 @@
       ]
      ]))
 
-; An entangle is a single atom to sync
+; An entangle is a single atom to sync. This will make interacting with it simpler
 (def entangle-atom (atom ""))
-
-;; Setup the atom
-(def changes-in (a/chan))
-(def changes-out (a/chan))
-
-(e/start-sync entangle-atom changes-in changes-out "Single Atom Sync")
 
 ;; Simple web handler
 (defn web-handler [_]
@@ -59,22 +53,43 @@
        :headers {"content-type" "application/text"}
        :body "Expected a websocket request."}
 
-      (d/let-flow [init-message (s/take! conn)]
+      (d/let-flow [client-id (s/take! conn)]
 
-        ;; deserialize data, write into entangle
-        (s/connect
-          (s/transform (map edn/read-string) conn)
-          changes-in)
+        ;; every new connection gets to sync with the same atom
+        (let [changes-in (a/chan)
+              changes-out (a/chan)]
 
-        ;; serialize, write out to stream
-        ;; TODO: does this cause deadlock if the channel gacks?
-        (s/connect
-          (s/transform
-            (map (fn [diff]
-                   (timbre/debug "Server sending:" diff)
-                   (pr-str diff))) changes-out)
-          conn)
-        (timbre/debug "Client connected: " init-message)
+          ;; Co-ordinate reading with starting sync
+          (d/on-realized
+            (dosync
+              (e/start-sync entangle-atom changes-in changes-out client-id)
+              (s/put! conn @entangle-atom))
+            (fn [x] (timbre/warn "Client handshake complete: " client-id))
+            (fn []
+              (timbre/warn "Client refused initial state. " client-id)
+              (s/close! changes-in)))
+
+          ;; Use init message as the connected user
+          ;; TODO: this needs to be co-ordinated with the initial value ()
+
+
+          ;; deserialize data, write into entangle
+          ;; FIXME: according to the docs this will close the downstream channel
+          ;;        automatically. Verify that
+          (s/connect
+            (s/transform (map edn/read-string) conn)
+            changes-in)
+
+          ;; serialize, write out to stream
+          ;; TODO: does this cause deadlock if the channel gacks?
+          (s/connect
+            (s/transform
+              (map (fn [diff]
+                     (timbre/debug "Server sending:" diff)
+                     (pr-str diff))) changes-out)
+            conn))
+
+        (timbre/debug "Client connected: " client-id)
         ))))
 
 ;; Create the aleph server to synchronize with
@@ -94,7 +109,7 @@
     (def ws-atom (atom ""))
     (def ws-in (a/chan))
     (def ws-out (a/chan))
-    (e/start-sync ws-atom ws-in ws-out)
+    (e/start-sync ws-atom ws-in ws-out :foo)
 
     (def remote-conn @(http/websocket-client "ws://localhost:10000/sync"))
     (s/connect
