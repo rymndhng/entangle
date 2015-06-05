@@ -1,0 +1,53 @@
+* Entangle
+Two atoms, separated both in space and time can be bound together using
+entanglement.
+
+Entangle is an implementation of Neil Fraser's [[https://neil.fraser.name/writing/sync/][Differential Sync]] algorithm using
+~core.async~ for Clojure and Clojurescript. It currently depends on a forked
+version of [[https://github.com/brentonashworth/clj-diff][clj-diff]] (for Clojure & Clojurescript cross compatibility).
+* Usage
+
+#+BEGIN_SRC clojure
+(require ['entagle.core :as e]
+         ['clojure.core.async :as a])
+
+(def atom-a (atom ""))
+(def atom-b (atom ""))
+
+(def a<-b (a/chan))
+(def a->b (a/chan))
+
+(e/start-sync atom-a a<-b a->b :atom-a)
+(e/start-sync atom-b a->b a<-b :atom-b)
+
+(reset! atom-a "FOO")
+
+; some time later
+(= @atom-b "FOO)
+;=> true
+#+END_SRC
+
+* Motivation
+How hard would it be to create a library that performed synchronization of state
+in the background? This sounds very useful for real-time collaborative web
+applications. Building this for Clojure seems really useful because it can
+target both client and server.
+
+Clojure provides alot of interesting features which make building this type of
+functionality easier. In particular:
+
+- Reference Types  :: Clojure reference types like ~atom~ provide an excellent
+     abstraction for working with state. Watches work transparently and
+     developers work with synchronization using ~reset!~ and ~update!~ as
+     usual. This is essentially the [[http://en.wikipedia.org/wiki/Observer_pattern][Observer Pattern]] in the standard library.
+- Write Once, Run Everywhere :: Clojure/Script targets more than the JVM which
+     is useful when working on web application clients that run in Javascript
+- CSP style semantics :: This library is heavily event-driven, and ~core.async~
+     makes modelling event loops simpler. It's lightweight concurrency also
+     abstracts away the lack of threading in Javascript.
+
+* License
+Copyright © 2015 rymndhng
+
+Distributed under the Eclipse Public License either version 1.0 or (at
+your option) any later version.
