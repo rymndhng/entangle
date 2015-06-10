@@ -86,7 +86,14 @@
             (s/transform
               (map (fn [diff]
                      (timbre/debug "Server sending:" diff)
-                     (pr-str diff))) changes-out)
+                     (->> diff
+                       ;; FIXME: Replace all \space with " " because
+                       ;; cljs.reader/read-string does not handle \space
+                       ;; literals.
+                       ;; See http://dev.clojure.org/jira/browse/CLJS-1299
+                       (clojure.walk/prewalk (fn [x] (if (= \space x) " " x)))
+                       pr-str)))
+              changes-out)
             conn))
 
         (timbre/debug "Client connected: " client-id)
