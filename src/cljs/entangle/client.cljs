@@ -37,6 +37,20 @@
 ;; Setup some websocket stuff
 (defonce websocket* (atom nil))
 
+(defn start-reactive-textarea []
+  "Wrapper to setup the textarea to reactively render when 'textarea'
+  changes."
+  (let [dom-textarea (.getElementById js/document "render-text")]
+    ;; reactively re-render
+    (add-watch textarea :ui-render
+      (fn [key ref old-state new-state]
+        (aset dom-textarea "value" (pr-str new-state))))
+
+    ;; TODO: this is currently buggy and blows up
+    #_(aset dom-textarea "onkeyup"
+      (fn [x]
+        (reset! textarea (aget dom-textarea "value"))))))
+
 (defn- main []
   (let [ws-chan (a/chan)
         data-in (a/chan)
@@ -94,3 +108,11 @@
         (reset! @websocket* nil))))
 
   (log "ready to go"))
+
+(aset js/window "onload"
+  (fn []
+    ;; reactive text box!
+    (start-reactive-textarea)
+
+    ;; enable start via main
+    (aset (.getElementById js/document "start-btn") "onclick" main)))

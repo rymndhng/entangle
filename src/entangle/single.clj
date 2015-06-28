@@ -29,7 +29,7 @@
       [:input {:id "form-name" :name "name" :placeholder "What is your name?"}]
       [:input.btn.btn-primary {:id "start-btn":type "button" :value "Start"}]
       [:br]
-      [:textarea {:cols 80 :rows 10}]
+      [:textarea {:id "render-text" :cols 80 :rows 10}]
       ]
      ]))
 
