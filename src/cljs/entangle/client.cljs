@@ -90,6 +90,8 @@
           data-out
           "webclient"))
 
+      (aset (.getElementById js/document "render-text") "disabled" nil)
+
       ;; pipeline the rest into textarea
       (a/pipeline 1 data-in (map reader/read-string) ws-chan))
 

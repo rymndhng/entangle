@@ -25,12 +25,23 @@
       [:script {:type "text/javascript"} "goog.require('entangle.client');"]
       ]
      [:body
-      [:h1 "Hello, Start Syncing?"]
-      [:input {:id "form-name" :name "name" :placeholder "What is your name?"}]
-      [:input.btn.btn-primary {:id "start-btn":type "button" :value "Start"}]
-      [:br]
-      [:textarea {:id "render-text" :cols 80 :rows 10}]
-      ]
+      [:div {:class "container"}
+       [:div {:class "row"}
+        [:div {:class "col-xs-12"}
+         [:h1 "Hello, Start Syncing?"]]]
+       [:div {:class "row"}
+        [:div.col-xs-12
+         [:form.form-inline
+          [:div.form-group
+           [:label {:for "form-name"}]
+           [:input.form-control {:id "form-name"
+                                 :type "text" :name "name" :placeholder "Your Name"}]]
+          " "
+          [:input.btn.btn-primary {:id "start-btn" :type "button" :value "Start"}]]]]
+       [:div {:class "row"}
+        [:div {:class "col-xs-12"}
+         [:br]
+         [:textarea.form-control {:id "render-text" :cols 80 :rows 10 :disabled true}]]]]]
      ]))
 
 ; An entangle is a single atom to sync. This will make interacting with it simpler
