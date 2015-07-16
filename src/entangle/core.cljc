@@ -49,18 +49,18 @@
         (diff/patch working-changes)))))
 
 (defn start-sync
-  "Start synchronization of atoms whose state changes are propogated when it's
-  state changes or when a patch is sent via data-in.
+  "Start synchronization of atoms whose state changes are propogated
+  when it's state changes or when a patch is sent via data-in.
 
-  Returns a channel which produces 'true' when both sender & receiver are in
-  full sync.
+  Returns a channel which produces 'true' when both sender & receiver
+  are in full sync.
 
   ref      - the reference object to synchronize
   data-in  - core.async channel for writing patches to
   data-out - core.async channel for reading patches from
   id       - id for debugging
 
-  TODO: this is broken because there's no concept of version numbering
+  This is an implementation of Neil Fraser's `Differential Sync'.
   "
   ([ref data-in data-out id]
    (let [watch-id (gensym :diff-sync)
@@ -71,60 +71,42 @@
      (go-loop [shadow        init-state
                backup-shadow init-state
                local-version 0
-               ack-version 0]
-       #?(:clj (timbre/debug id "Start: "
-                 shadow \, backup-shadow \, local-version \, ack-version))
+               ack-version   0]
+       #?(:clj (timbre/debug id "Start" \newline
+                 "Shadow        : " shadow \newline
+                 "Backup shadow : " backup-shadow \newline
+                 "Local version : " local-version \newline
+                 "ACK version   : " ack-version \newline))
        (let [cur-state [shadow backup-shadow local-version ack-version]
              next-state
              (alt!
-               ;; handle incoming patches updates the shadow and the client text
-               data-in
-               ([changes ch]
-                (when-let [{:keys [version patch]} changes]
-                  #? (:clj (timbre/debug id "data-in: " cur-state changes))
+               data-in ([changes ch] (when-let [{:keys [version patch]} changes]
+                                       (if (= version local-version)
+                                         (do (when-not (empty-patch? patch)
+                                               (swap! ref diff/patch patch))
+                                             [(diff/patch shadow patch) shadow local-version (inc ack-version)])
+                                         cur-state)))
 
-                  ;; TODO: this ignores older diffs
-                  (if (and (= version local-version)
-                        (not (empty-patch? patch)))
-
-                    ;; If the version is equal to the expected ack-version, perform an update
-                    (do
-                      (swap! ref diff/patch patch)
-                      [(diff/patch shadow patch) shadow local-version (inc ack-version)])
-
-                    ;; otherwise ignore it (because we've already applied it)
-                    ;; TODO: queue up messages instead..
-                    cur-state)))
-
-               ;; handle changes to the ref which should fire off a sync
-               user-changes
-               ([[key ref old-state new-state :as raw-data] ch]
-                #?(:clj (timbre/debug id "user-changes: " raw-data))
-                (let [patch (diff/diff shadow new-state)]
-                  ;; in the event the channel returns nil, we assume the channel
-                  ;; die and set the state to `nil` so we exit and perform
-                  ;; cleanup
-                  (when (a/>! data-out {:version ack-version
-                                        :patch patch})
-                    (if (empty-patch? patch)
-                      cur-state
-                      [new-state shadow (inc local-version) ack-version])))))]
+               user-changes ([[key ref old-state new-state :as raw-data] ch]
+                             (let [patch (diff/diff shadow new-state)]
+                               (when (a/>! data-out {:version ack-version :patch patch})
+                                 [new-state shadow (inc local-version) ack-version]))))]
 
          (if-let [[shadow' backup-shadow' local-version' ack-version'] next-state]
            (do
-             #?(:clj (timbre/debug id "cmp" cur-state next-state))
-             ;; If state has not changed, you are synced
-             (when (and (= shadow shadow') (= local-version local-version')
-                     (= ack-version ack-version'))
+             #?(:clj (timbre/debug id "End" \newline
+                       "shadow'        : " shadow' \newline
+                       "backup-shadow' : " backup-shadow' \newline
+                       "local-version' : " local-version' \newline
+                       "ack-version'   : " ack-version' \newline))
+             (when (= shadow' backup-shadow')
                (a/>! synced-ch true))
              (recur shadow' backup-shadow' local-version' ack-version'))
 
-           ;; cleanup otherwise
            (do
              #?(:clj (timbre/debug id "entangle shutting down... "))
              (remove-watch ref watch-id)
-             (doall (map a/close! [data-in data-out synced-ch]))
-             #?(:clj (timbre/debug "entangle finished ... " id))))))
+             (doall (map a/close! [data-in data-out synced-ch]))))))
      synced-ch)))
 
-#?(:clj (timbre/set-level! :debug))
+#?(:clj (timbre/set-level! :warn))

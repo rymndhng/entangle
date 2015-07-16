@@ -4,6 +4,16 @@
             [clojure.test :refer :all]
             [entangle.core :refer :all]))
 
+(defn generate-entangle [key]
+  "Test helper to create an "
+  (let [in (a/chan 1)
+        out (a/chan 1)
+        state (atom "")]
+    {:in  (a/chan 1)
+     :out (a/chan 1)
+     :state state
+     :ack (start-sync state in out key)}))
+
 (deftest state-change-handling
   (let [data-in (a/chan 1)
         data-out (a/chan 1)
@@ -13,16 +23,28 @@
     (testing "Changing an atom sends the patches to the other side"
       (reset! state "foo")
       (is (= {:version 0 :patch (diff/diff "" "foo")}
-            (a/<!! data-out))))
+             (a/<!! data-out))))
 
-    (testing "Sending a patch to the atom eventually alters it's value"
+    (testing "Sending a patch to the atom alters it's value after acknowledgement"
+      (a/>!! data-in {:version 1 :patch (diff/diff "foo" "foobar")})
+      (is (= {:version 1 :patch (diff/diff "foobar" "foobar")}
+             (a/<!! data-out)))
+      (is (= "foobar" @state)))
+
+    (testing "Sending a duplicate item is a no-operation."
       (a/>!! data-in {:version 1 :patch (diff/diff "foo" "foobar")})
       (a/<!! ack)
-      (is (= "foobar" @state))
-      (is {:version 0 :patch (diff/diff "foo" "foobar")}
-        (a/<!! data-out)))
+      (is (= "foobar" @state)))
 
-    (testing "Cleans up eagerly when data-in closes"
+    (testing "Sending two successive patches does not cause deadlock."
+      (a/>!! data-in {:version 2 :patch (diff/diff "foobar" "foobar baz")})
+      (a/<!! data-out)
+      (a/>!! data-in {:version 3 :patch (diff/diff "foobar" "foobar baz qux")})
+      (a/<!! data-out)
+      (is (= "foobar baz qux") @state))
+
+    (testing "Cleans up when data-in channel closes"
+      (a/<!! ack) ; some cleanup from previous
       (a/close! data-in)
       (is (nil? (a/<!! ack)))
       (is (nil? (a/<!! data-in)))
@@ -36,15 +58,15 @@
         ackB (start-sync stateB A->B B->A :atom-b)]
 
     (testing "Changing an atoms value updates the other"
-      (swap! stateA (fn [thing] (str thing "foo")))
+      (reset! stateA "foo")
+      (a/<!! ackA)
       (a/<!! ackB)
       (is (= "foo" @stateB))
 
       (reset! stateB "bar")
       (a/<!! ackA)
       (a/<!! ackB)
-      (is (= "bar" @stateA) "Reseting stateB will update stateA")
-      )
+      (is (= "bar" @stateA) "Reseting stateB will update stateA"))
 
     (testing "Changes to the atoms keep working"
       (reset! stateA "FOO")
