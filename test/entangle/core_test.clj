@@ -8,47 +8,76 @@
   "Test helper to create an "
   (let [in (a/chan 1)
         out (a/chan 1)
-        state (atom "")]
-    {:in  (a/chan 1)
-     :out (a/chan 1)
-     :state state
-     :ack (start-sync state in out key)}))
-
-(deftest state-change-handling
-  (let [data-in (a/chan 1)
-        data-out (a/chan 1)
         state (atom "")
-        ack (start-sync state data-in data-out :state-change-handling)]
+        sync-ch (a/chan (a/dropping-buffer 1))
+        ack (start-sync state in out key)]
+    {:in    in
+     :out   out
+     :state state
+     :ack   ack}))
 
-    (testing "Changing an atom sends the patches to the other side"
+
+(deftest normal-operation
+  (let [{:keys [in out state ack]} (generate-entangle :foo)]
+    (testing "Creating a patch sends a patch to the other side."
       (reset! state "foo")
-      (is (= {:version 0 :patch (diff/diff "" "foo")}
-             (a/<!! data-out))))
+      (is (= {:n 0 :m 0 :edits [(diff/diff "" "foo")]}
+            (a/<!! out))))
+    (testing "Other side sends a patch back for new state change."
+      (a/>!! in {:n 1 :m 0 :edits [(diff/diff "foo" "foobar")]})
+      ;; Here, we look at sending something out so we know that the state has changed
+      (a/<!! out)
+      (is (= "foobar" @state)))))
 
-    (testing "Sending a patch to the atom alters it's value after acknowledgement"
-      (a/>!! data-in {:version 1 :patch (diff/diff "foo" "foobar")})
-      (is (= {:version 1 :patch (diff/diff "foobar" "foobar")}
-             (a/<!! data-out)))
+(deftest duplicate-packet
+  (let [{:keys [in out state ack]} (generate-entangle :foo)
+        called (atom 0)]
+    (add-watch state :watcher (fn [_ _ _ _] (swap! called inc)))
+    (testing "Sends first packet and is received"
+      (a/>!! in {:n 0 :m 0 :edits [(diff/diff "" "foobar")]})
+      (a/<!! out)
       (is (= "foobar" @state)))
+    (testing "Sending duplicate packet is ignored"
+      (a/>!! in {:n 0 :m 0 :edits [(diff/diff "" "foobar")]})
+      (a/>!! in {:n 0 :m 0 :edits [(diff/diff "" "foobar")]})
+      (a/>!! in {:n 0 :m 0 :edits [(diff/diff "" "foobar")]})
+      (a/>!! in {:n 0 :m 0 :edits [(diff/diff "" "foobar")]})
+      (is (= 1 @called)))))
 
-    (testing "Sending a duplicate item is a no-operation."
-      (a/>!! data-in {:version 1 :patch (diff/diff "foo" "foobar")})
-      (a/<!! ack)
-      (is (= "foobar" @state)))
 
-    (testing "Sending two successive patches does not cause deadlock."
-      (a/>!! data-in {:version 2 :patch (diff/diff "foobar" "foobar baz")})
-      (a/<!! data-out)
-      (a/>!! data-in {:version 3 :patch (diff/diff "foobar" "foobar baz qux")})
-      (a/<!! data-out)
-      (is (= "foobar baz qux") @state))
+(deftest lost-outbound-packet
+  (let [{:keys [in out state ack]} (generate-entangle :foo)]
+    (testing "Lost outbound packets queue up diffs"
+      (reset! state "foo")
+      (is (= {:n 0 :m 0 :edits [(diff/diff "" "foo")]}
+             (a/<!! out)))
+      (reset! state "foobar")
+      (is (= {:n 0 :m 1 :edits [(diff/diff "" "foo")
+                                (diff/diff "foo" "foobar")]}
+             (a/<!! out)))
+      (reset! state "foobarbaz")
+      (is (= {:n 0 :m 2 :edits [(diff/diff "" "foo")
+                                (diff/diff "foo" "foobar")
+                                (diff/diff "foobar" "foobarbaz")]}
+             (a/<!! out))))
+    (testing "When acknowledged, queue empties out"
+      (a/>!! in {:n 3 :m 0 :edits [(diff/diff "foobarbaz" "foobarbazqux")]})
+      (is (= {:n 1 :m 3 :edits [(diff/diff "" "")]}
+             (a/<!! out))))))
 
-    (testing "Cleans up when data-in channel closes"
-      (a/<!! ack) ; some cleanup from previous
-      (a/close! data-in)
-      (is (nil? (a/<!! ack)))
-      (is (nil? (a/<!! data-in)))
-      (is (nil? (a/<!! data-out))))))
+(deftest lost-returning-packet
+  (let [{:keys [in out state ack]} (generate-entangle :foo)]
+    (testing "Queuing up first change"
+      (a/>!! in {:n 0 :m 0 :edits [(diff/diff "" "foo")]})
+      (is (= {:n 1 :m 0 :edits [(diff/diff "" "")]}
+             (a/<!! out)))
+      (is (= "foo" @state)))
+    (testing "Recovers after lost return packet"
+      (a/>!! in {:n 0 :m 1 :edits [(diff/diff "" "foo") (diff/diff "foo" "bar")]})
+      (is (= {:n 2 :m 0 :edits [(diff/diff "" "")]}
+             (a/<!! out)))
+      (is (= "bar" @state)))))
+
 
 (deftest entangling-two-atoms
   (let [A->B (a/chan 1) B->A (a/chan 1)
@@ -56,6 +85,9 @@
         stateB (atom "")
         ackA (start-sync stateA B->A A->B :atom-a)
         ackB (start-sync stateB A->B B->A :atom-b)]
+
+    (a/<!! ackA)
+    (a/<!! ackB)
 
     (testing "Changing an atoms value updates the other"
       (reset! stateA "foo")
@@ -114,6 +146,8 @@
   This way, we don't need to restart the repl because the repl thread has hung.
   "
   []
-  (let [f (future (do (state-change-handling)
+  (let [f (future (do (normal-operation)
+                      (duplicate-packet)
+                      (lost-outbound-packet)
                       (entangling-two-atoms)))]
     (.get f 1000 java.util.concurrent.TimeUnit/MILLISECONDS)))

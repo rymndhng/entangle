@@ -48,6 +48,28 @@
         (diff/patch patch)
         (diff/patch working-changes)))))
 
+(defn poke [ref]
+  "Pokes the ref so that a sync is propogated."
+  (swap! ref identity))
+
+(defn poke-every
+  "Pokes the ref every msec to trigger a sync. This is useful when one
+  client is producing no changes. "
+  [ref msec]
+  (go-loop []
+    (a/<! (a/timeout msec))
+    (poke ref)
+    (recur)))
+
+(defn compatible? [shadow patch]
+  "Are the versions of shadow and patch compatible"
+  (and (= (:n shadow) (:n patch))
+       (= (:m shadow) (:m patch))))
+
+(defn apply-all-edits [base edits]
+  "Applies all patches onto base sequentially"
+  (reduce diff/patch base edits))
+
 (defn start-sync
   "Start synchronization of atoms whose state changes are propogated
   when it's state changes or when a patch is sent via data-in.
@@ -60,53 +82,73 @@
   data-out - core.async channel for reading patches from
   id       - id for debugging
 
+  For differential sync to work properly, the entangled atoms need to
+  take turns talking to each other. This can be achieved by sending an
+  empty patch using `poke`.
+
   This is an implementation of Neil Fraser's `Differential Sync'.
   "
   ([ref data-in data-out id]
    (let [watch-id (gensym :diff-sync)
-         init-state   @ref
+         init-state   {:n 0 :m 0 :content @ref}
          user-changes (a/chan)
-         synced-ch    (a/chan (a/sliding-buffer 1))]
+         synced-ch (a/chan (a/sliding-buffer 1))
+         shutdown! (fn []
+                     #?(:clj (timbre/info id "entangle shutting down... "))
+                     (remove-watch ref watch-id)
+                     (doall (map a/close! [data-in data-out synced-ch])))]
+     ;; In Neil Fraser's Paper, this is the start of (1)
      (add-watch ref watch-id #(go (a/>! user-changes %&)))
-     (go-loop [shadow        init-state
-               backup-shadow init-state
-               local-version 0
-               ack-version   0]
-       #?(:clj (timbre/debug id "Start" \newline
+
+     (go-loop [shadow init-state
+               backup init-state
+               edits-queue []]
+       #?(:clj (timbre/debug id \newline
+                 "State         : " @ref   \newline
                  "Shadow        : " shadow \newline
-                 "Backup shadow : " backup-shadow \newline
-                 "Local version : " local-version \newline
-                 "ACK version   : " ack-version \newline))
-       (let [cur-state [shadow backup-shadow local-version ack-version]
-             next-state
-             (alt!
-               data-in ([changes ch] (when-let [{:keys [version patch]} changes]
-                                       (if (= version local-version)
-                                         (do (when-not (empty-patch? patch)
-                                               (swap! ref diff/patch patch))
-                                             [(diff/patch shadow patch) shadow local-version (inc ack-version)])
-                                         cur-state)))
+                 "Backup shadow : " backup \newline))
 
-               user-changes ([[key ref old-state new-state :as raw-data] ch]
-                             (let [patch (diff/diff shadow new-state)]
-                               (when (a/>! data-out {:version ack-version :patch patch})
-                                 [new-state shadow (inc local-version) ack-version]))))]
+       (when (apply = (map :content [shadow backup]))
+         (a/>! synced-ch true))
 
-         (if-let [[shadow' backup-shadow' local-version' ack-version'] next-state]
-           (do
-             #?(:clj (timbre/debug id "End" \newline
-                       "shadow'        : " shadow' \newline
-                       "backup-shadow' : " backup-shadow' \newline
-                       "local-version' : " local-version' \newline
-                       "ack-version'   : " ack-version' \newline))
-             (when (= shadow' backup-shadow')
-               (a/>! synced-ch true))
-             (recur shadow' backup-shadow' local-version' ack-version'))
+       (a/alt! user-changes
+               ([[_ _ _ new-state] ch]
+                (let [;; Step (2)
+                      edits (conj edits-queue (diff/diff (:content shadow) new-state))
+                      patch {:n (:m shadow)
+                             :m (:n shadow)
+                             :edits edits}
 
-           (do
-             #?(:clj (timbre/debug id "entangle shutting down... "))
-             (remove-watch ref watch-id)
-             (doall (map a/close! [data-in data-out synced-ch]))))))
+                      shadow' (-> shadow (update :n inc)
+                                (assoc :content new-state))]
+                  ;; Step (3)
+                  (if (a/>! data-out patch)
+                    ;; TODO: filter items from outbound queue
+                    (recur shadow' shadow edits)
+                    (shutdown!))))
+
+               data-in
+               ([{:keys [edits] :as patch} ch]
+                (if-not patch
+                  (shutdown!)
+                  (if-let [[base edits] (condp compatible? patch
+                                          shadow [shadow edits]
+                                          backup [backup (rest edits)]
+                                          nil)]
+                    (do
+                      ;; Step (8). Avoid no-op patches because create chatty noises
+                      (when-not (every? empty-patch? edits)
+                        (swap! ref apply-all-edits edits))
+
+                      (let [base' (-> base
+                                    ;; Step (5)
+                                    (update :content apply-all-edits edits)
+                                    ;; Step (6)
+                                    (update :m inc))]
+                        ;; Step (7)
+                        (recur base' base [])))
+                    ;; Patch does not match... ignore it
+                    (recur shadow backup edits-queue))))))
      synced-ch)))
 
-#?(:clj (timbre/set-level! :warn))
+#?(:clj (timbre/set-level! :info))
