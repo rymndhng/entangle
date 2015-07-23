@@ -11,7 +11,7 @@
                  [clj-diff.core :as diff]
                  [taoensso.timbre :as timbre])]
       :cljs
-      [(:require-macros [cljs.core.async.macros :refer [go go-loop alt!]])
+      [(:require-macros [cljs.core.async.macros :as a :refer [go go-loop alt!]])
        (:require [cljs.core.async :as a]
                  [clj-diff.core :as diff])]
       ))
@@ -103,10 +103,12 @@
      (go-loop [shadow init-state
                backup init-state
                edits-queue []]
-       #?(:clj (timbre/debug id \newline
-                 "State         : " @ref   \newline
-                 "Shadow        : " shadow \newline
-                 "Backup shadow : " backup \newline))
+       (#?@(:clj [timbre/debug]
+            :cljs [println])
+         (timbre/debug id \newline
+           "State         : " @ref   \newline
+           "Shadow        : " shadow \newline
+           "Backup shadow : " backup \newline))
 
        (when (apply = (map :content [shadow backup]))
          (a/>! synced-ch true))

@@ -27,5 +27,10 @@
                                    :output-dir "resources/public/js/out"
                                    :source-map "resources/publis/js/out.js.map"
                                    :optimizations :none
-                                   :source-maps true}}]}
-  )
+                                   :source-maps true}}
+                       {:id "test"
+                        :source-paths ["src" "test"]
+                        :compiler {:output-to "target/testable.js"
+                                   :optimizations :simple
+                                   :pretty-print true}}]
+              :test-commands {"unit-tests" ["node" "target/testable.js"]}})
