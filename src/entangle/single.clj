@@ -5,9 +5,7 @@
    [ring.middleware.params :as params]
    [compojure.route :as route]
    [aleph.http :as http]
-   [byte-streams :as bs]
    [manifold.stream :as s]
-   [manifold.bus :as bus]
    [manifold.deferred :as d]
    [clojure.core.async :as a]
    [clojure.edn :as edn]
@@ -39,10 +37,11 @@
           " "
           [:input.btn.btn-primary {:id "start-btn" :type "button" :value "Start"}]]]]
        [:div {:class "row"}
-        [:div {:class "col-xs-12"}
-         [:br]
-         [:textarea.form-control {:id "render-text" :cols 80 :rows 10 :disabled true}]]]]]
-     ]))
+        [:div {:class "col-xs-6"}
+         [:textarea.form-control {:id "render-text" :cols 80 :rows 10 :disabled true}]]
+        [:div {:class "col-xs-6"}
+         [:p "Changes"]
+         [:div#repr]]]]]]))
 
 ; An entangle is a single atom to sync. This will make interacting with it simpler
 (def entangle-atom (atom ""))
@@ -76,9 +75,8 @@
               (e/start-sync entangle-atom changes-in changes-out client-id)
               (s/put! conn @entangle-atom))
             (fn [x] (timbre/warn "Client handshake complete: " client-id))
-            (fn []
-              (timbre/warn "Client refused initial state. " client-id)
-              (s/close! changes-in)))
+            (fn []  (timbre/warn "Client refused initial state. " client-id)
+                   (s/close! changes-in)))
 
           ;; Use init message as the connected user
           ;; TODO: this needs to be co-ordinated with the initial value ()
@@ -87,9 +85,7 @@
           ;; deserialize data, write into entangle
           ;; FIXME: according to the docs this will close the downstream channel
           ;;        automatically. Verify that
-          (s/connect
-            (s/transform (map edn/read-string) conn)
-            changes-in)
+          (s/connect (s/transform (map edn/read-string) conn) changes-in)
 
           ;; serialize, write out to stream
           ;; TODO: does this cause deadlock if the channel gacks?
@@ -98,11 +94,11 @@
               (map (fn [diff]
                      (timbre/debug "Server sending:" diff)
                      (->> diff
-                       ;; FIXME: Replace all \space with " " because
-                       ;; cljs.reader/read-string does not handle \space
-                       ;; literals.
+                       ;; FIXME: Stringify all characters because
+                       ;; ClojureScript's reader does not support rich literals.
                        ;; See http://dev.clojure.org/jira/browse/CLJS-1299
-                       (clojure.walk/prewalk (fn [x] (if (= \space x) " " x)))
+                       (clojure.walk/prewalk (fn [x] (if (= (type x) java.lang.Character)
+                                                      (str x) x)))
                        pr-str)))
               changes-out)
             conn))
