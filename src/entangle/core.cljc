@@ -13,7 +13,8 @@
       :cljs
       [(:require-macros [cljs.core.async.macros :as a :refer [go go-loop alt!]])
        (:require [cljs.core.async :as a]
-                 [clj-diff.core :as diff])]
+                 [clj-diff.core :as diff]
+                 [taoensso.timbre :as timbre])]
       ))
 
 #?(:clj (timbre/set-level! :warn))
@@ -94,7 +95,7 @@
          user-changes (a/chan)
          synced-ch (a/chan (a/sliding-buffer 1))
          shutdown! (fn []
-                     #?(:clj (timbre/info id "entangle shutting down... "))
+                     (timbre/info id "entangle shutting down... ")
                      (remove-watch ref watch-id)
                      (doall (map a/close! [data-in data-out synced-ch])))]
      ;; In Neil Fraser's Paper, this is the start of (1)
@@ -103,12 +104,11 @@
      (go-loop [shadow init-state
                backup init-state
                edits-queue []]
-       (#?@(:clj [timbre/debug]
-            :cljs [println])
-         (timbre/debug id \newline
-           "State         : " @ref   \newline
-           "Shadow        : " shadow \newline
-           "Backup shadow : " backup \newline))
+
+       (timbre/debug id \newline
+         "State         : " @ref   \newline
+         "Shadow        : " shadow \newline
+         "Backup shadow : " backup \newline)
 
        (when (apply = (map :content [shadow backup]))
          (a/>! synced-ch true))
@@ -153,4 +153,4 @@
                     (recur shadow backup edits-queue))))))
      synced-ch)))
 
-#?(:clj (timbre/set-level! :info))
+(timbre/set-level! :warn)

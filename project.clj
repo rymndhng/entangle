@@ -9,7 +9,7 @@
                  [org.clojars.rymndhng/clj-diff "1.1.1-SNAPSHOT"]
 
                  [org.clojure/core.async "0.1.346.0-17112a-alpha"]
-                 [com.taoensso/timbre "3.4.0"]
+                 [com.taoensso/timbre "4.0.2"]
 
                  [aleph "0.4.0"]
                  [compojure "1.3.3"]
