@@ -62,13 +62,13 @@
     (poke ref)
     (recur)))
 
-(defn compatible? [shadow patch]
+(defn patch-compatible? [shadow patch]
   "Are the versions of shadow and patch compatible"
-  (and (= (:n shadow) (:n patch))
-       (= (:m shadow) (:m patch))))
+  (and (= (get shadow :n :not-in-shadow)
+          (get patch  :n :not-in-patch))))
 
 (defn apply-all-edits [base edits]
-  "Applies all patches onto base sequentially"
+  "Applies all sequential patches onto a base object"
   (reduce diff/patch base edits))
 
 (defn start-sync
@@ -116,41 +116,52 @@
        (a/alt! user-changes
                ([[_ _ _ new-state] ch]
                 (let [;; Step (2)
-                      edits (conj edits-queue (diff/diff (:content shadow) new-state))
                       patch {:n (:m shadow)
                              :m (:n shadow)
-                             :edits edits}
-
+                             :diff (diff/diff (:content shadow) new-state)}
+                      edits (conj edits-queue patch)
                       shadow' (-> shadow (update :n inc)
                                 (assoc :content new-state))]
                   ;; Step (3)
-                  (if (a/>! data-out patch)
+                  (if (a/>! data-out edits)
                     ;; TODO: filter items from outbound queue
                     (recur shadow' shadow edits)
                     (shutdown!))))
 
                data-in
-               ([{:keys [edits] :as patch} ch]
-                (if-not patch
+               ([data ch]
+                (timbre/debug "Got data-in: " (pr-str data))
+                (if-not data
                   (shutdown!)
-                  (if-let [[base edits] (condp compatible? patch
-                                          shadow [shadow edits]
-                                          backup [backup (rest edits)]
-                                          nil)]
-                    (do
-                      ;; Step (8). Avoid no-op patches because create chatty noises
-                      (when-not (every? empty-patch? edits)
-                        (swap! ref apply-all-edits edits))
+                  ;; remove already acknowledged packets in case of lost packets
+                  (let [edits (remove #(< (:m %)
+                                          (:m shadow)) data)]
 
-                      (let [base' (-> base
+                    ;; figure out which of shadow/backup is compatible
+                    (if-let [[base edits-queue'] (condp patch-compatible? (first edits)
+                                                   shadow [shadow edits-queue]
+                                                   backup [backup []]
+                                                   nil)]
+                      (let [diffs (eduction (map :diff) (remove empty-patch?) edits)
+                            m' (-> edits last :m inc)
+                            base' (-> base
                                     ;; Step (5)
-                                    (update :content apply-all-edits edits)
+                                    (update :content apply-all-edits diffs)
                                     ;; Step (6)
-                                    (update :m inc))]
+                                    (assoc :m m'))
+                            edits-queue'' (filter #(< m' (:n %)) edits-queue')]
+                        ;; Step (8). Avoid no-op patches because create chatty noises
+                        (when (seq diffs)
+                          (timbre/debug "Applying: " (pr-str diffs))
+                          (swap! ref apply-all-edits diffs))
+
                         ;; Step (7)
-                        (recur base' base [])))
-                    ;; Patch does not match... ignore it
-                    (recur shadow backup edits-queue))))))
+                        (recur base' base edits-queue''))
+
+                      ;; Patch does not match... ignore it
+                      (do
+                        (timbre/debug "Diff not compatible:" edits)
+                        (recur shadow backup edits-queue))))))))
      synced-ch)))
 
 (timbre/set-level! :warn)

@@ -1,7 +1,7 @@
 (ns entangle.core-test
   #?@(:clj  [(:require [clojure.core.async :as a]
                        [clj-diff.core :as diff]
-                       [clojure.test :refer [deftest is testing]]
+                       [clojure.test :refer [deftest is testing run-tests]]
                        [entangle.core :as e])]
       :cljs [(:require-macros [cljs.core.async.macros :as a :refer [go alt!]])
              (:require [cljs.core.async :as a]
@@ -33,10 +33,10 @@
       (let [{:keys [in out state ack]} (generate-entangle :foo)]
         (testing "Creating a patch sends a patch to the other side."
           (reset! state "foo")
-          (is (= {:n 0 :m 0 :edits [(diff/diff "" "foo")]}
+          (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}]
                  (a/<! out))))
         (testing "Other side sends a patch back for new state change."
-          (a/>! in {:n 1 :m 0 :edits [(diff/diff "foo" "foobar")]})
+          (a/>! in [{:n 1 :m 0 :diff (diff/diff "foo" "foobar")}])
           ;; Here, we look at sending something out so we know that the state has changed
           (a/<! out)
           (is (= "foobar" @state)))))))
@@ -48,14 +48,14 @@
     (test-async
       (a/go
         (testing "Sends first packet and is received"
-          (a/>! in {:n 0 :m 0 :edits [(diff/diff "" "foobar")]})
+          (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foobar")}])
           (a/<! out)
           (is (= "foobar" @state)))
         (testing "Sending duplicate packet is ignored"
-          (a/>! in {:n 0 :m 0 :edits [(diff/diff "" "foobar")]})
-          (a/>! in {:n 0 :m 0 :edits [(diff/diff "" "foobar")]})
-          (a/>! in {:n 0 :m 0 :edits [(diff/diff "" "foobar")]})
-          (a/>! in {:n 0 :m 0 :edits [(diff/diff "" "foobar")]})
+          (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foobar")}])
+          (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foobar")}])
+          (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foobar")}])
+          (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foobar")}])
           (is (= 1 @called)))))))
 
 
@@ -65,37 +65,38 @@
       (a/go
         (testing "Lost outbound packets queue up diffs"
           (reset! state "foo")
-          (is (= {:n 0 :m 0 :edits [(diff/diff "" "foo")]}
+          (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}]
                  (a/<! out)))
           (reset! state "foobar")
-          (is (= {:n 0 :m 1 :edits [(diff/diff "" "foo")
-                                    (diff/diff "foo" "foobar")]}
+          (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}
+                  {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}]
                  (a/<! out)))
           (reset! state "foobarbaz")
-          (is (= {:n 0 :m 2 :edits [(diff/diff "" "foo")
-                                    (diff/diff "foo" "foobar")
-                                    (diff/diff "foobar" "foobarbaz")]}
+          (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}
+                  {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}
+                  {:n 0 :m 2 :diff (diff/diff "foobar" "foobarbaz")}]
                  (a/<! out))))
         (testing "When acknowledged, queue empties out"
-          (a/>! in {:n 3 :m 0 :edits [(diff/diff "foobarbaz" "foobarbazqux")]})
-          (is (= {:n 1 :m 3 :edits [(diff/diff "" "")]}
+          (a/>! in [{:n 3 :m 0 :diff (diff/diff "foobarbaz" "foobarbazqux")}])
+          (is (= [{:n 1 :m 3 :diff (diff/diff "" "")}]
                  (a/<! out))))))))
+
 
 (deftest lost-returning-packet
   (let [{:keys [in out state ack]} (generate-entangle :foo)]
     (test-async
       (a/go
         (testing "Queuing up first change"
-          (a/>! in {:n 0 :m 0 :edits [(diff/diff "" "foo")]})
-          (is (= {:n 1 :m 0 :edits [(diff/diff "" "")]}
+          (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foo")}])
+          (is (= [{:n 1 :m 0 :diff (diff/diff "" "")}]
                  (a/<! out)))
           (is (= "foo" @state)))
         (testing "Recovers after lost return packet"
-          (a/>! in {:n 0 :m 1 :edits [(diff/diff "" "foo") (diff/diff "foo" "bar")]})
-          (is (= {:n 2 :m 0 :edits [(diff/diff "" "")]}
+          (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foo")}
+                    {:n 0 :m 1 :diff (diff/diff "foo" "bar")}])
+          (is (= [{:n 2 :m 0 :diff (diff/diff "" "")}]
                  (a/<! out)))
           (is (= "bar" @state)))))))
-
 
 (deftest entangling-two-atoms
   (let [A->B (a/chan 1) B->A (a/chan 1)
