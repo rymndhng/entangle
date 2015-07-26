@@ -32,23 +32,6 @@
   [patch]
   (= patch {:+ [], :- []}))
 
-(defn rebase
-  "Rebases the current state against head after applying patch.
-
-  throws InvalidIndexException
-  If the patch is applied to an index that does not exist. It'd be great if the
-  patching algorithm was looser with application.
-  "
-  [head base patch]
-  (let [working-changes (diff/diff base head)]
-    ;; if the patch is the same, this is assumed to be an -ack-, otherwise
-    ;; perform the rebase
-    (if (= working-changes patch)
-      head
-      (-> base
-        (diff/patch patch)
-        (diff/patch working-changes)))))
-
 (defn poke [ref]
   "Pokes the ref so that a sync is propogated."
   (swap! ref identity))
@@ -67,9 +50,19 @@
   (and (= (get shadow :n :not-in-shadow)
           (get patch  :n :not-in-patch))))
 
+(defn try-patch [base patch]
+  "Tries to apply the diff which may fail. This fuzziness should be pushed down
+  to the diffing algorithm."
+  (try
+    (diff/patch base patch)
+    (catch #?(:clj Exception
+              :cljs (js/Error.)) e
+      (timbre/warn "Unable to apply to base: " base " Patch: " patch)
+      base)))
+
 (defn apply-all-edits [base edits]
   "Applies all sequential patches onto a base object"
-  (reduce diff/patch base edits))
+  (reduce try-patch base edits))
 
 (defn start-sync
   "Start synchronization of atoms whose state changes are propogated
