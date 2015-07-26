@@ -17,3 +17,6 @@ pom.xml.asc
 /.lein-*
 /.nrepl-port
 *-init.clj
+
+# Clojurescript
+out
