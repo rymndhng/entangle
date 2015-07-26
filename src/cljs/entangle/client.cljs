@@ -82,7 +82,7 @@
       ;; Take the first message off ws-chan and use it to setup the initial state
       (let [initial-state (a/<! ws-chan)]
         (log (str "Initial State:" initial-state))
-        (reset! textarea initial-state)
+        (reset! textarea (reader/read-string initial-state))
 
         ;; TODO: rework the frontend so we can easily notify when synced
         (e/start-sync textarea

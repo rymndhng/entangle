@@ -73,7 +73,7 @@
           (d/on-realized
             (dosync
               (e/start-sync entangle-atom changes-in changes-out client-id)
-              (s/put! conn @entangle-atom))
+              (s/put! conn (pr-str @entangle-atom)))
             (fn [x] (timbre/warn "Client handshake complete: " client-id))
             (fn []  (timbre/warn "Client refused initial state. " client-id)
                    (s/close! changes-in)))
