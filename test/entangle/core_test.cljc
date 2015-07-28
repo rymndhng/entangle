@@ -21,11 +21,12 @@
   (let [in (a/chan 1)
         out (a/chan 1)
         state (atom "")
-        ack (e/start-sync state in out key)]
-    {:in    in
-     :out   out
-     :state state
-     :ack   ack}))
+        [synced-ch sync] (e/start-sync state in out key)]
+    {:in         in
+     :out        out
+     :state      state
+     :sync       sync
+     :synced-ch  synced-ch}))
 
 (deftest normal-operation
   (test-async
@@ -148,6 +149,94 @@
 
 
         (a/close! A->B)))))
+
+(defn- random-chars
+  "Generates an infinite stream of character from the alphabet."
+  ([]
+   (random-chars [\a \b \c \d \e \f \g \h \i]))
+  ([alphabet]
+   (cons (rand-nth alphabet)
+     (lazy-seq (random-chars alphabet)))))
+
+(defn- random-strings
+  "Generates an infinite stream of random strings with an optional
+  length."
+  ([]
+   (random-strings 8))
+  ([length]
+   (cons (apply str (take length (random-chars)))
+     (lazy-seq (random-strings length)))))
+
+(deftest fuzz-test-input-2
+  (let [iterations 2
+        str-len 8
+        entangle-A (generate-entangle :a)
+        entangle-B (generate-entangle :b)
+        a-done (a/chan 1)
+        b-done (a/chan 1)
+
+        print-data (map (fn [x]
+                          (println (str "A: " @(:state entangle-A) @(:sync entangle-A)))
+                          (println (str  "B: " @(:state entangle-B) @(:sync entangle-B)))
+                          (println x \newline) x))]
+    (a/pipeline-blocking 1 (:in entangle-A) print-data (:out entangle-B))
+    (a/pipeline-blocking 1 (:in entangle-B) print-data (:out entangle-A))
+    (reset! (:state entangle-A) "init-state")
+
+    (a/go (doseq [val (take iterations (random-strings str-len))]
+            (reset! (:state entangle-A) val)
+            (a/<! (a/timeout (rand-int 10))))
+          (a/close! a-done))
+
+    (a/go (doseq [val (take iterations (random-strings str-len))]
+            (reset! (:state entangle-B) val)
+            (a/<! (a/timeout (rand-int 100))))
+          (a/close! b-done))
+
+    (a/<!! a-done)
+    (a/<!! b-done)
+    (e/poke (:state entangle-A))
+    (e/poke (:state entangle-B))
+    (a/<!! (a/timeout 500))
+    (is (= @(:state entangle-A) @(:state entangle-B)))))
+
+(deftest fuzz-test-server
+  (let [iterations 1
+        str-len 10
+        timeout 100
+        server (atom "")
+        entangle-A (generate-entangle :a)
+        entangle-B (generate-entangle :b)
+
+        server-done (a/chan 1)
+        a-done      (a/chan 1)
+        b-done      (a/chan 1)
+
+        log-a (map (fn [x] (println "A:" @(:state entangle-A) (str  x)) x))
+        log-b (map (fn [x] (println "B:" @(:state entangle-B) (str  x)) x))]
+    (e/start-sync server (:out entangle-A) (:in entangle-A) :A)
+    (e/start-sync server (:out entangle-B) (:in entangle-B) :B)
+
+
+    (a/go (doseq [val (take 100 (random-strings str-len))]
+            (reset! server val)
+            (a/<! (a/timeout (rand-int timeout)))))
+
+    (a/go (doseq [val (take 100 (random-strings str-len))]
+            (reset! (:state entangle-A) val)
+            (a/<! (a/timeout (rand-int timeout))))
+          (a/close! a-done))
+
+    (a/go (doseq [val (take 100 (random-strings str-len))]
+            (reset! (:state entangle-B) val)
+            (a/<! (a/timeout (rand-int timeout))))
+          (a/close! b-done))
+
+    (a/<!! a-done)
+    (a/<!! b-done)
+    (a/<!! (a/timeout 500))
+    (is (= @server @(:state entangle-A) @(:state entangle-B)))))
+
 
 ;; (deftest shutdown-on-error
 ;;   (let [A->B (a/chan 1) B->A (a/chan 1)

@@ -87,6 +87,7 @@
          init-state   {:n 0 :m 0 :content @ref}
          user-changes (a/chan)
          synced-ch (a/chan (a/sliding-buffer 1))
+         shadow-state (atom {})
          shutdown! (fn []
                      (timbre/info id "entangle shutting down... ")
                      (remove-watch ref watch-id)
@@ -98,6 +99,11 @@
                backup init-state
                edits-queue []]
 
+       ;; Update the diagnostic data on every state
+       (reset! shadow-state {:shadow shadow
+                             :backup backup
+                             :edits-queue edits-queue})
+
        (timbre/debug id \newline
          "State         : " @ref   \newline
          "Shadow        : " shadow \newline
@@ -106,6 +112,7 @@
        (when (apply = (map :content [shadow backup]))
          (a/>! synced-ch true))
 
+       ;; TODO: consider move this logic to the top because we accidentally get concurrent printing otherwise
        (a/alt! user-changes
                ([[_ _ _ new-state] ch]
                 (let [;; Step (2)
@@ -155,6 +162,6 @@
                       (do
                         (timbre/debug "Diff not compatible:" edits)
                         (recur shadow backup edits-queue))))))))
-     synced-ch)))
+     [synced-ch shadow-state])))
 
 (timbre/set-level! :warn)
