@@ -36,15 +36,6 @@
   "Pokes the ref so that a sync is propogated."
   (swap! ref identity))
 
-(defn poke!
-  "Pokes the ref every msec to trigger a sync. This is useful when one
-  client is producing no changes. "
-  [sync-ch msec]
-  (go-loop []
-    (a/<! (a/timeout msec))
-    (a/>! sync-ch :poke!)
-    (recur)))
-
 (defn patch-compatible? [shadow patch]
   "Are the versions of shadow and patch compatible"
   (and (= (get shadow :n :not-in-shadow)
@@ -126,13 +117,11 @@
 
   This is an implementation of Neil Fraser's `Differential Sync'.
   "
-  ([ref data-in data-out id]
+  ([ref data-in data-out id & {:keys [sync-ch changes]}]
    (let [snapshot     @ref
          watch-id     (gensym :diff-sync)
          init-shadow  {:n 0 :m 0 :content snapshot}
          user-changes (a/chan)
-         sync         (a/chan)
-         state-change (a/chan)
          shutdown! (fn []
                      (timbre/info id "entangle shutting down... ")
                      (remove-watch ref watch-id)
@@ -147,11 +136,11 @@
                       :edits-queue []}]
 
        (if-let [real-next-state
-                (a/alt! sync ([cause ch]
-                              (timbre/debug "Sync triggered by " cause)
-                              (let [{:keys [edits-queue] :as next-state} (prepare-patch state)]
-                                (when (a/>! data-out edits-queue)
-                                  next-state)))
+                (a/alt! sync-ch ([cause ch]
+                                 (timbre/debug "Sync triggered by " cause)
+                                 (let [{:keys [edits-queue] :as next-state} (prepare-patch state)]
+                                   (when (a/>! data-out edits-queue)
+                                     next-state)))
 
                         user-changes ([[_ _ _ snapshot] ch]
                                       (timbre/debug "User changes: " snapshot)
@@ -165,9 +154,9 @@
                                      (swap! ref apply-all-edits diffs))
                                    next-state)))]
 
-         (do (a/>! state-change real-next-state)
+         (do (when changes
+               (a/>! changes real-next-state))
              (recur real-next-state))
 
          ;; no next state? should shutdown!
-         (shutdown!)))
-     [sync state-change])))
+         (shutdown!))))))

@@ -13,6 +13,8 @@
    [taoensso.timbre :as timbre]
    [hiccup.core :as h]))
 
+(timbre/set-level! :debug)
+
 (def homepage
   (h/html
     [:html
@@ -57,54 +59,54 @@
 (defn sync-handler
   [req]
   (d/let-flow [conn (d/catch (http/websocket-connection req)
-                        (fn [_] nil))]
+                        #(timbre/error %))]
     (if-not conn
       {:status 400
        :headers {"content-type" "application/text"}
        :body "Expected a websocket request."}
 
-      (d/let-flow [client-id (s/take! conn)]
+      (d/let-flow [client-id (s/take! conn)
+                   successful (s/put! conn (pr-str @entangle-atom))]
 
-        ;; every new connection gets to sync with the same atom
-        (let [changes-in (a/chan)
-              changes-out (a/chan)]
+        (if-not (or client-id successful)
+          (timbre/warn "Initial handshake failed." client-id)
 
-          ;; Co-ordinate reading with starting sync
-          (d/on-realized
-            (dosync
-              (e/start-sync entangle-atom changes-in changes-out client-id)
-              (s/put! conn (pr-str @entangle-atom)))
-            (fn [x] (timbre/warn "Client handshake complete: " client-id))
-            (fn []  (timbre/warn "Client refused initial state. " client-id)
-                   (s/close! changes-in)))
+          ;; every new connection gets to sync with the same atom
+          (let [changes-in (a/chan)
+                changes-out (a/chan)
+                [sync state-change] (e/start-sync entangle-atom
+                                      changes-in changes-out client-id)]
+            (timbre/debug "Client connected: " client-id)
 
-          ;; Use init message as the connected user
-          ;; TODO: this needs to be co-ordinated with the initial value ()
+            ;; server should pre-emptively push and then sleepy for 500 ms
+            (a/go-loop []
+              (a/<! state-change)
+              (recur))
+            (a/go-loop []
+              (a/>! sync :pre-emptive)
+              (a/<! (a/timeout 500))
+              (recur))
 
+            ;; deserialize data, write into entangle
+            ;; FIXME: according to the docs this will close the downstream channel
+            ;;        automatically. Verify that
+            (s/connect (s/transform (map edn/read-string) conn) changes-in)
 
-          ;; deserialize data, write into entangle
-          ;; FIXME: according to the docs this will close the downstream channel
-          ;;        automatically. Verify that
-          (s/connect (s/transform (map edn/read-string) conn) changes-in)
-
-          ;; serialize, write out to stream
-          ;; TODO: does this cause deadlock if the channel gacks?
-          (s/connect
-            (s/transform
-              (map (fn [diff]
-                     (timbre/debug "Server sending:" diff)
-                     (->> diff
-                       ;; FIXME: Stringify all characters because
-                       ;; ClojureScript's reader does not support rich literals.
-                       ;; See http://dev.clojure.org/jira/browse/CLJS-1299
-                       (clojure.walk/prewalk (fn [x] (if (= (type x) java.lang.Character)
-                                                      (str x) x)))
-                       pr-str)))
-              changes-out)
-            conn))
-
-        (timbre/debug "Client connected: " client-id)
-        ))))
+            ;; serialize, write out to stream
+            ;; TODO: does this cause deadlock if the channel gacks?
+            (s/connect
+              (s/transform
+                (map (fn [diff]
+                       (timbre/debug "Server sending:" diff)
+                       (->> diff
+                         ;; FIXME: Stringify all characters because
+                         ;; ClojureScript's reader does not support rich literals.
+                         ;; See http://dev.clojure.org/jira/browse/CLJS-1299
+                         (clojure.walk/prewalk (fn [x] (if (= (type x) java.lang.Character)
+                                                        (str x) x)))
+                         pr-str)))
+                changes-out)
+              conn)))))))
 
 ;; Create the aleph server to synchronize with
 (def handler

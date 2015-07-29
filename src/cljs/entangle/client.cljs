@@ -80,15 +80,21 @@
     ;; Setup the first go-routine that reads messages from the websocket channel
     (go
       ;; Take the first message off ws-chan and use it to setup the initial state
-      (let [initial-state (a/<! ws-chan)]
+      (let [initial-state (a/<! ws-chan)
+            _ (reset! textarea (reader/read-string initial-state))
+            [sync state-change] (e/start-sync textarea data-in data-out "webclient")]
+
         (log (str "Initial State:" initial-state))
-        (reset! textarea (reader/read-string initial-state))
+
+        ;; do syncing in 500 ms intervals
+        (loop []
+          (a/<! state-change)
+          (a/>! sync :pre-emptive)
+          (a/<! (a/timeout 500))
+          (recur))
 
         ;; TODO: rework the frontend so we can easily notify when synced
-        (e/start-sync textarea
-          data-in
-          data-out
-          "webclient"))
+        )
 
       (aset (.getElementById js/document "render-text") "disabled" nil)
 
