@@ -17,7 +17,7 @@
                  [taoensso.timbre :as timbre])]
       ))
 
-#?(:clj (timbre/set-level! :warn))
+(timbre/set-level! :warn)
 
 (defn valid-patch?
   "Validate an incoming patch object. It needs to be a map with
@@ -36,13 +36,13 @@
   "Pokes the ref so that a sync is propogated."
   (swap! ref identity))
 
-(defn poke-every
+(defn poke!
   "Pokes the ref every msec to trigger a sync. This is useful when one
   client is producing no changes. "
-  [ref msec]
+  [sync-ch msec]
   (go-loop []
     (a/<! (a/timeout msec))
-    (poke ref)
+    (a/>! sync-ch :poke!)
     (recur)))
 
 (defn patch-compatible? [shadow patch]
@@ -64,6 +64,45 @@
   "Applies all sequential patches onto a base object"
   (reduce try-patch base edits))
 
+(defn- prepare-patch
+  "Implements part 2,3 of algorithm from state."
+  [{:keys [snapshot shadow backup edits-queue] :as state}]
+  (let [patch {:n (:m shadow)
+               :m (:n shadow)
+               :diff (diff/diff (:content shadow) snapshot)}]
+    (merge state {:shadow (-> shadow
+                            (update :n inc)
+                            (assoc :content snapshot))
+                  :backup shadow
+                  :edits-queue (conj edits-queue patch)})))
+
+(defn- handle-incoming-patch
+  "Implements part 5,6,7 of algorithm. Returns a tuple of two elements
+  where the first element contains all the state for the next recur,
+  and a list of diffs to apply to the state. "
+  [patch {:keys [shadow backup edits-queue] :as state}]
+  (let [edits (remove #(< (:m %)
+                          (:m shadow)) patch)]
+    ;; figure out which of shadow/backup is compatible
+    (if-let [[base edits-queue] (condp patch-compatible? (first edits)
+                                  shadow [shadow edits-queue]
+                                  backup [backup []]
+                                  nil)]
+      (let [diffs (eduction (map :diff) (remove empty-patch?) edits)
+            m' (-> edits last :m inc)]
+        [(merge state {:shadow (-> base
+                                 ;; Step (5)
+                                 (update :content apply-all-edits diffs)
+                                 ;; Step (6)
+                                 (assoc :m m'))
+                       :backup shadow
+                       :edits-queue (filter #(< m' (:n %)) edits-queue)})
+         diffs])
+
+      ;; Found no compatible patches, return current state
+      [state])))
+
+
 (defn start-sync
   "Start synchronization of atoms whose state changes are propogated
   when it's state changes or when a patch is sent via data-in.
@@ -80,88 +119,55 @@
   take turns talking to each other. This can be achieved by sending an
   empty patch using `poke`.
 
+  Returns two channels [sync state]. A message should be sent to
+  `sync` to flush changes to the other side. `state` watches the
+  internal values of `shadow`, `backup`, `edits-queue` in each
+  iteration of the event loop.
+
   This is an implementation of Neil Fraser's `Differential Sync'.
   "
   ([ref data-in data-out id]
-   (let [watch-id (gensym :diff-sync)
-         init-state   {:n 0 :m 0 :content @ref}
+   (let [snapshot     @ref
+         watch-id     (gensym :diff-sync)
+         init-shadow  {:n 0 :m 0 :content snapshot}
          user-changes (a/chan)
-         synced-ch (a/chan (a/sliding-buffer 1))
-         shadow-state (atom {})
+         sync         (a/chan)
+         state-change (a/chan)
          shutdown! (fn []
                      (timbre/info id "entangle shutting down... ")
                      (remove-watch ref watch-id)
-                     (doall (map a/close! [data-in data-out synced-ch])))]
+                     (doall (map a/close! [data-in data-out sync state-change])))]
+
      ;; In Neil Fraser's Paper, this is the start of (1)
      (add-watch ref watch-id #(go (a/>! user-changes %&)))
 
-     (go-loop [shadow init-state
-               backup init-state
-               edits-queue []]
+     (go-loop [state {:snapshot    snapshot
+                      :shadow      init-shadow
+                      :backup      init-shadow
+                      :edits-queue []}]
 
-       ;; Update the diagnostic data on every state
-       (reset! shadow-state {:shadow shadow
-                             :backup backup
-                             :edits-queue edits-queue})
+       (if-let [real-next-state
+                (a/alt! sync ([cause ch]
+                              (timbre/debug "Sync triggered by " cause)
+                              (let [{:keys [edits-queue] :as next-state} (prepare-patch state)]
+                                (when (a/>! data-out edits-queue)
+                                  next-state)))
 
-       (timbre/debug id \newline
-         "State         : " @ref   \newline
-         "Shadow        : " shadow \newline
-         "Backup shadow : " backup \newline)
+                        user-changes ([[_ _ _ snapshot] ch]
+                                      (timbre/debug "User changes: " snapshot)
+                                      (assoc state :snapshot snapshot))
 
-       (when (apply = (map :content [shadow backup]))
-         (a/>! synced-ch true))
+                        data-in ([patch ch]
+                                 (timbre/debug "Got data-in: " (pr-str patch))
+                                 (let [[next-state diffs] (handle-incoming-patch patch state)]
+                                   ;; TODO: should I care or should I swap eagerly
+                                   (when diffs
+                                     (swap! ref apply-all-edits diffs))
+                                   next-state)))]
 
-       ;; TODO: consider move this logic to the top because we accidentally get concurrent printing otherwise
-       (a/alt! user-changes
-               ([[_ _ _ new-state] ch]
-                (let [;; Step (2)
-                      patch {:n (:m shadow)
-                             :m (:n shadow)
-                             :diff (diff/diff (:content shadow) new-state)}
-                      edits (conj edits-queue patch)
-                      shadow' (-> shadow (update :n inc)
-                                (assoc :content new-state))]
-                  ;; Step (3)
-                  (if (a/>! data-out edits)
-                    ;; TODO: filter items from outbound queue
-                    (recur shadow' shadow edits)
-                    (shutdown!))))
+         (do (a/>! state-change real-next-state)
+             (recur real-next-state))
 
-               data-in
-               ([data ch]
-                (timbre/debug "Got data-in: " (pr-str data))
-                (if-not data
-                  (shutdown!)
-                  ;; remove already acknowledged packets in case of lost packets
-                  (let [edits (remove #(< (:m %)
-                                          (:m shadow)) data)]
-
-                    ;; figure out which of shadow/backup is compatible
-                    (if-let [[base edits-queue'] (condp patch-compatible? (first edits)
-                                                   shadow [shadow edits-queue]
-                                                   backup [backup []]
-                                                   nil)]
-                      (let [diffs (eduction (map :diff) (remove empty-patch?) edits)
-                            m' (-> edits last :m inc)
-                            base' (-> base
-                                    ;; Step (5)
-                                    (update :content apply-all-edits diffs)
-                                    ;; Step (6)
-                                    (assoc :m m'))
-                            edits-queue'' (filter #(< m' (:n %)) edits-queue')]
-                        ;; Step (8). Avoid no-op patches because create chatty noises
-                        (when (seq diffs)
-                          (timbre/debug "Applying: " (pr-str diffs))
-                          (swap! ref apply-all-edits diffs))
-
-                        ;; Step (7)
-                        (recur base' base edits-queue''))
-
-                      ;; Patch does not match... ignore it
-                      (do
-                        (timbre/debug "Diff not compatible:" edits)
-                        (recur shadow backup edits-queue))))))))
-     [synced-ch shadow-state])))
-
-(timbre/set-level! :warn)
+         ;; no next state? should shutdown!
+         (shutdown!)))
+     [sync state-change])))

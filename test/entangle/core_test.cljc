@@ -18,77 +18,146 @@
 
 (defn generate-entangle [key]
   "Test helper to create an "
-  (let [in (a/chan 1)
+  (let [in  (a/chan 1)
         out (a/chan 1)
-        state (atom "")
-        [synced-ch sync] (e/start-sync state in out key)]
-    {:in         in
-     :out        out
-     :state      state
-     :sync       sync
-     :synced-ch  synced-ch}))
+        ref (atom "")
+        [sync state] (e/start-sync ref in out key)]
+    {:in    in
+     :out   out
+     :ref   ref
+     :sync  sync
+     :state state}))
 
 (deftest normal-operation
   (test-async
     (a/go
-      (let [{:keys [in out state ack]} (generate-entangle :foo)]
+      (let [{:keys [in out ref ack sync state]} (generate-entangle :foo)]
         (testing "Creating a patch sends a patch to the other side."
-          (reset! state "foo")
-          (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}]
-                 (a/<! out))))
-        (testing "Other side sends a patch back for new state change."
+          (reset! ref "foo")
+          (a/<! state)
+          ;; (a/>! sync :manual)
+          ;; (a/<! state)
+          ;; (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}]
+          ;;        (a/<! out)))
+
+          )
+
+        #_(testing "Other side sends a patch back for new ref change."
           (a/>! in [{:n 1 :m 0 :diff (diff/diff "foo" "foobar")}])
-          ;; Here, we look at sending something out so we know that the state has changed
-          (a/<! out)
-          (is (= "foobar" @state)))))))
+          (a/<! state)
+          ;; Here, we look at sending something out so we know that the ref has changed
+          (is (= "foobar" @ref)))))))
 
 (deftest duplicate-packet
-  (let [{:keys [in out state ack]} (generate-entangle :foo)
+  (let [{:keys [in out ref sync state]} (generate-entangle :foo)
         called (atom 0)]
-    (add-watch state :watcher (fn [_ _ _ _] (swap! called inc)))
+    (add-watch ref :watcher (fn [_ _ _ _] (swap! called inc)))
     (test-async
       (a/go
         (testing "Sends first packet and is received"
           (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foobar")}])
-          (a/<! out)
-          (is (= "foobar" @state)))
+          (a/<! state)
+          (is (= "foobar" @ref)))
         (testing "Sending duplicate packet is ignored"
           (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foobar")}])
+          (a/<! state)
           (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foobar")}])
+          (a/<! state)
           (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foobar")}])
-          (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foobar")}])
+          (a/<! state)
           (is (= 1 @called)))))))
 
 
+;; TODO: clean up this test -- it's ugly as hell
 (deftest lost-outbound-packet
-  (let [{:keys [in out state ack]} (generate-entangle :foo)]
+  (let [{:keys [in out ref sync state]} (generate-entangle :foo)]
     (test-async
       (a/go
         (testing "Lost outbound packets queue up diffs"
-          (reset! state "foo")
+          (reset! ref "foo")
+          (is (= {:snapshot "foo"
+                  :shadow {:n 0 :m 0 :content ""}
+                  :backup {:n 0 :m 0 :content ""}
+                  :edits-queue []}
+                 (a/<! state)))
+          (a/>! sync :manual)
           (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}]
                  (a/<! out)))
-          (reset! state "foobar")
+          (is (= {:snapshot "foo"
+                  :shadow {:n 1 :m 0 :content "foo"}
+                  :backup {:n 0 :m 0 :content ""}
+                  :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}]}
+                 (a/<! state))))
+
+        (testing "queue up more changes"
+          (reset! ref "foobar")
+          (is (= {:snapshot "foobar"
+                  :shadow {:n 1 :m 0 :content "foo"}
+                  :backup {:n 0 :m 0 :content ""}
+                  :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}]}
+                 (a/<! state)))
+          (a/>! sync :manual)
           (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}
                   {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}]
                  (a/<! out)))
-          (reset! state "foobarbaz")
+          (is (= {:snapshot "foobar"
+                  :shadow {:n 2 :m 0 :content "foobar"}
+                  :backup {:n 1 :m 0 :content "foo"}
+                  :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}
+                                {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}]}
+                 (a/<! state))))
+
+        (testing "queueing up baz"
+          (reset! ref "foobarbaz")
+          (is (= {:snapshot "foobarbaz"
+                  :shadow {:n 2 :m 0 :content "foobar"}
+                  :backup {:n 1 :m 0 :content "foo"}
+                  :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}
+                                {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}]}
+                 (a/<! state)))
+          (a/>! sync :manual)
           (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}
                   {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}
                   {:n 0 :m 2 :diff (diff/diff "foobar" "foobarbaz")}]
-                 (a/<! out))))
+                 (a/<! out)))
+          (is (= {:snapshot "foobarbaz"
+                  :shadow {:n 3 :m 0 :content "foobarbaz"}
+                  :backup {:n 2 :m 0 :content "foobar"}
+                  :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}
+                                {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}
+                                {:n 0 :m 2 :diff (diff/diff "foobar" "foobarbaz")}]}
+                 (a/<! state))))
+
         (testing "When acknowledged, queue empties out"
           (a/>! in [{:n 3 :m 0 :diff (diff/diff "foobarbaz" "foobarbazqux")}])
+          (is (= {:snapshot "foobarbaz"
+                  :shadow {:n 3 :m 1 :content "foobarbazqux"}
+                  :backup {:n 3 :m 0 :content "foobarbaz"}
+                  :edits-queue []}
+                 (a/<! state)))
+          (is (= {:snapshot "foobarbazqux"
+                  :shadow {:n 3 :m 1 :content "foobarbazqux"}
+                  :backup {:n 3 :m 0 :content "foobarbaz"}
+                  :edits-queue []}
+                 (a/<! state)))
+          (a/>! sync :manual)
+          (is (= {:snapshot "foobarbazqux"
+                  :shadow {:n 4 :m 1 :content "foobarbazqux"}
+                  :backup {:n 3 :m 1 :content "foobarbazqux"}
+                  :edits-queue [{:n 1 :m 3 :diff {:+ [] :- []}}]}
+                 (a/<! state)))
           (is (= [{:n 1 :m 3 :diff (diff/diff "" "")}]
                  (a/<! out))))))))
 
 
 (deftest lost-returning-packet
-  (let [{:keys [in out state ack]} (generate-entangle :foo)]
+  (let [{:keys [in out ref sync state]} (generate-entangle :foo)]
     (test-async
       (a/go
         (testing "Queuing up first change"
           (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foo")}])
+          (a/<! state)
+          (a/>! sync)
           (is (= [{:n 1 :m 0 :diff (diff/diff "" "")}]
                  (a/<! out)))
           (is (= "foo" @state)))
@@ -167,40 +236,50 @@
    (cons (apply str (take length (random-chars)))
      (lazy-seq (random-strings length)))))
 
-(deftest fuzz-test-input-2
-  (let [iterations 2
-        str-len 8
+(deftest two-way-fuzz-testing
+  (let [iterations 100
+        str-len 100
         entangle-A (generate-entangle :a)
         entangle-B (generate-entangle :b)
         a-done (a/chan 1)
-        b-done (a/chan 1)
+        b-done (a/chan 1)]
+    ;; discard state information -- we don't care
+    (a/go-loop []
+      (a/alts! [(:state entangle-A) (:state entangle-B)])
+      (recur))
 
-        print-data (map (fn [x]
-                          (println (str "A: " @(:state entangle-A) @(:sync entangle-A)))
-                          (println (str  "B: " @(:state entangle-B) @(:sync entangle-B)))
-                          (println x \newline) x))]
-    (a/pipeline-blocking 1 (:in entangle-A) print-data (:out entangle-B))
-    (a/pipeline-blocking 1 (:in entangle-B) print-data (:out entangle-A))
-    (reset! (:state entangle-A) "init-state")
+    ;; connect friends
+    (a/pipe (:in entangle-A) (:out entangle-B))
+    (a/pipe (:in entangle-B) (:out entangle-A))
 
     (a/go (doseq [val (take iterations (random-strings str-len))]
-            (reset! (:state entangle-A) val)
+            (reset! (:ref entangle-A) val)
+            (a/<! (a/timeout (rand-int 10)))
+            (a/>! (:sync entangle-A) :much-wow)
             (a/<! (a/timeout (rand-int 10))))
           (a/close! a-done))
 
     (a/go (doseq [val (take iterations (random-strings str-len))]
-            (reset! (:state entangle-B) val)
+            (reset! (:ref entangle-B) val)
+            (a/<! (a/timeout (rand-int 100)))
+            (a/>! (:sync entangle-B) :much-amaze)
             (a/<! (a/timeout (rand-int 100))))
           (a/close! b-done))
 
-    (a/<!! a-done)
-    (a/<!! b-done)
-    (e/poke (:state entangle-A))
-    (e/poke (:state entangle-B))
-    (a/<!! (a/timeout 500))
-    (is (= @(:state entangle-A) @(:state entangle-B)))))
+    (a/go
+      (a/<! a-done)
+      (a/<! b-done)
+      ;; trigger one more sync
+      (a/>! (:sync entangle-A) :last-one)
+      (is (= @(:ref entangle-A) @(:ref entangle-B))))))
 
-(deftest fuzz-test-server
+(deftest concurrent-writes-are-deterministic
+  []
+  ;; TODO: WIP, curious if we write many changes outside of the go loop are we guaranteed that it will be in order
+  )
+
+;; This test isn't well designed yet IMO
+#_(deftest three-way-fuzz-testing
   (let [iterations 1
         str-len 10
         timeout 100
@@ -208,34 +287,64 @@
         entangle-A (generate-entangle :a)
         entangle-B (generate-entangle :b)
 
-        server-done (a/chan 1)
+        [server-a-sync server-a-state] (e/start-sync server
+                                         (:out entangle-A)
+                                         (:in entangle-A) :A)
+        [server-b-sync server-b-state] (e/start-sync server
+                                         (:out entangle-B)
+                                         (:in entangle-B) :B)
+
+        server-done  (a/chan 1)
         a-done      (a/chan 1)
         b-done      (a/chan 1)
 
-        log-a (map (fn [x] (println "A:" @(:state entangle-A) (str  x)) x))
-        log-b (map (fn [x] (println "B:" @(:state entangle-B) (str  x)) x))]
-    (e/start-sync server (:out entangle-A) (:in entangle-A) :A)
-    (e/start-sync server (:out entangle-B) (:in entangle-B) :B)
+        cleanup (a/go-loop []
+                  (a/alts! [(:state entangle-A)
+                            (:state entangle-B)
+                            server-a-state
+                            server-b-state])
+                  (recur))]
+    ;; discard state information -- we don't care
 
 
-    (a/go (doseq [val (take 100 (random-strings str-len))]
+    (a/go (doseq [val (take iterations (random-strings str-len))]
             (reset! server val)
-            (a/<! (a/timeout (rand-int timeout)))))
+            (a/<! (a/timeout (rand-int timeout)))
+            (a/>! server-a-sync :waow)
+            (a/>! server-b-sync :waow)
+            (a/<! (a/timeout (rand-int timeout))))
+          (a/close! server-done))
 
-    (a/go (doseq [val (take 100 (random-strings str-len))]
-            (reset! (:state entangle-A) val)
+    (a/go (doseq [val (take iterations (random-strings str-len))]
+            (reset! (:ref entangle-A) val)
+            (a/<! (a/timeout (rand-int timeout)))
+            (a/>! (:sync entangle-A) :trigger)
             (a/<! (a/timeout (rand-int timeout))))
           (a/close! a-done))
 
-    (a/go (doseq [val (take 100 (random-strings str-len))]
-            (reset! (:state entangle-B) val)
+    (a/go (doseq [val (take iterations (random-strings str-len))]
+            (reset! (:ref entangle-B) val)
+            (a/<! (a/timeout (rand-int timeout)))
+            (a/>! (:sync entangle-B) :trigger)
             (a/<! (a/timeout (rand-int timeout))))
           (a/close! b-done))
 
-    (a/<!! a-done)
-    (a/<!! b-done)
-    (a/<!! (a/timeout 500))
-    (is (= @server @(:state entangle-A) @(:state entangle-B)))))
+    ;; when done, write one final thing in
+    (a/go
+      (a/<! server-done)
+      (a/<! a-done)
+      (a/<! b-done)
+      (a/close! cleanup)
+      (reset! server "DONT MATTER FOO!")
+      (loop []
+        (a/>! server-a-sync :waow)
+        (a/>! server-b-sync :waow)))
+
+    (a/go
+      (a/<! server-done)
+      (a/<! a-done)
+      (a/<! b-done)
+      (is (= @server @(:ref entangle-A) @(:ref entangle-B))))))
 
 
 ;; (deftest shutdown-on-error
