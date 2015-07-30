@@ -87,7 +87,8 @@
                                  ;; Step (6)
                                  (assoc :m m'))
                        :backup shadow
-                       :edits-queue (filter #(< m' (:n %)) edits-queue)})
+                       ;; this is kind of gross but filter creates a list which is a no-no as a queue
+                       :edits-queue (into [] (filter #(< m' (:n %)) edits-queue))})
          diffs])
 
       ;; Found no compatible patches, return current state
@@ -98,26 +99,20 @@
   "Start synchronization of atoms whose state changes are propogated
   when it's state changes or when a patch is sent via data-in.
 
-  Returns a channel which produces 'true' when both sender & receiver
-  are in full sync.
-
-  ref      - the reference object to synchronize
-  data-in  - core.async channel for writing patches to
-  data-out - core.async channel for reading patches from
-  id       - id for debugging
+  ref       the reference object to synchronize
+  id        id for debugging
+  data-in   core.async channel for writing patches to
+  data-out  core.async channel for reading patches from
+  sync-ch   channel where writes to it trigger a sync
+  changes   channel where changes to internal state are published
 
   For differential sync to work properly, the entangled atoms need to
   take turns talking to each other. This can be achieved by sending an
   empty patch using `poke`.
 
-  Returns two channels [sync state]. A message should be sent to
-  `sync` to flush changes to the other side. `state` watches the
-  internal values of `shadow`, `backup`, `edits-queue` in each
-  iteration of the event loop.
-
   This is an implementation of Neil Fraser's `Differential Sync'.
   "
-  ([ref data-in data-out id & {:keys [sync-ch changes]}]
+  ([ref data-in data-out id sync-ch state-changes-ch]
    (let [snapshot     @ref
          watch-id     (gensym :diff-sync)
          init-shadow  {:n 0 :m 0 :content snapshot}
@@ -125,7 +120,9 @@
          shutdown! (fn []
                      (timbre/info id "entangle shutting down... ")
                      (remove-watch ref watch-id)
-                     (doall (map a/close! [data-in data-out sync state-change])))]
+                     (doall (map a/close! [data-in data-out sync-ch state-changes-ch]))
+                     (when state-changes-ch
+                       (a/close! state-changes-ch)))]
 
      ;; In Neil Fraser's Paper, this is the start of (1)
      (add-watch ref watch-id #(go (a/>! user-changes %&)))
@@ -135,16 +132,16 @@
                       :backup      init-shadow
                       :edits-queue []}]
 
-       (if-let [real-next-state
+       (if-let [[real-next-state action]
                 (a/alt! sync-ch ([cause ch]
                                  (timbre/debug "Sync triggered by " cause)
                                  (let [{:keys [edits-queue] :as next-state} (prepare-patch state)]
                                    (when (a/>! data-out edits-queue)
-                                     next-state)))
+                                     [next-state :sync])))
 
                         user-changes ([[_ _ _ snapshot] ch]
                                       (timbre/debug "User changes: " snapshot)
-                                      (assoc state :snapshot snapshot))
+                                      [(assoc state :snapshot snapshot) :snapshot])
 
                         data-in ([patch ch]
                                  (timbre/debug "Got data-in: " (pr-str patch))
@@ -152,10 +149,10 @@
                                    ;; TODO: should I care or should I swap eagerly
                                    (when diffs
                                      (swap! ref apply-all-edits diffs))
-                                   next-state)))]
+                                   [next-state :diff])))]
 
-         (do (when changes
-               (a/>! changes real-next-state))
+         (do (when state-changes-ch
+               (a/>! state-changes-ch (assoc real-next-state :action action)))
              (recur real-next-state))
 
          ;; no next state? should shutdown!

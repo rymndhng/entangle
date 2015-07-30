@@ -6,7 +6,7 @@
       :cljs [(:require-macros [cljs.core.async.macros :as a :refer [go alt!]])
              (:require [cljs.core.async :as a]
                        [clj-diff.core :as diff]
-                       [cljs.test :refer-macros [deftest is testing async]]
+                       [cljs.test :refer-macros [deftest is testing async run-tests]]
                        [entangle.core :as e])]))
 
 (defn test-async
@@ -18,10 +18,12 @@
 
 (defn generate-entangle [key]
   "Test helper to create an "
-  (let [in  (a/chan 1)
-        out (a/chan 1)
-        ref (atom "")
-        [sync state] (e/start-sync ref in out key)]
+  (let [in    (a/chan 1)
+        out   (a/chan 1)
+        sync  (a/chan)
+        state (a/chan)
+        ref   (atom "")]
+    (e/start-sync ref in out key sync state)
     {:in    in
      :out   out
      :ref   ref
@@ -35,14 +37,12 @@
         (testing "Creating a patch sends a patch to the other side."
           (reset! ref "foo")
           (a/<! state)
-          ;; (a/>! sync :manual)
-          ;; (a/<! state)
-          ;; (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}]
-          ;;        (a/<! out)))
+          (a/>! sync :manual)
+          (a/<! state)
+          (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}]
+                 (a/<! out))))
 
-          )
-
-        #_(testing "Other side sends a patch back for new ref change."
+        (testing "Other side sends a patch back for new ref change."
           (a/>! in [{:n 1 :m 0 :diff (diff/diff "foo" "foobar")}])
           (a/<! state)
           ;; Here, we look at sending something out so we know that the ref has changed
@@ -75,7 +75,8 @@
       (a/go
         (testing "Lost outbound packets queue up diffs"
           (reset! ref "foo")
-          (is (= {:snapshot "foo"
+          (is (= {:action :snapshot
+                  :snapshot "foo"
                   :shadow {:n 0 :m 0 :content ""}
                   :backup {:n 0 :m 0 :content ""}
                   :edits-queue []}
@@ -83,7 +84,8 @@
           (a/>! sync :manual)
           (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}]
                  (a/<! out)))
-          (is (= {:snapshot "foo"
+          (is (= {:action :sync
+                  :snapshot "foo"
                   :shadow {:n 1 :m 0 :content "foo"}
                   :backup {:n 0 :m 0 :content ""}
                   :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}]}
@@ -91,7 +93,8 @@
 
         (testing "queue up more changes"
           (reset! ref "foobar")
-          (is (= {:snapshot "foobar"
+          (is (= {:action :snapshot
+                  :snapshot "foobar"
                   :shadow {:n 1 :m 0 :content "foo"}
                   :backup {:n 0 :m 0 :content ""}
                   :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}]}
@@ -100,7 +103,8 @@
           (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}
                   {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}]
                  (a/<! out)))
-          (is (= {:snapshot "foobar"
+          (is (= {:action :sync
+                  :snapshot "foobar"
                   :shadow {:n 2 :m 0 :content "foobar"}
                   :backup {:n 1 :m 0 :content "foo"}
                   :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}
@@ -109,7 +113,8 @@
 
         (testing "queueing up baz"
           (reset! ref "foobarbaz")
-          (is (= {:snapshot "foobarbaz"
+          (is (= {:action :snapshot
+                  :snapshot "foobarbaz"
                   :shadow {:n 2 :m 0 :content "foobar"}
                   :backup {:n 1 :m 0 :content "foo"}
                   :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}
@@ -120,7 +125,8 @@
                   {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}
                   {:n 0 :m 2 :diff (diff/diff "foobar" "foobarbaz")}]
                  (a/<! out)))
-          (is (= {:snapshot "foobarbaz"
+          (is (= {:action :sync
+                  :snapshot "foobarbaz"
                   :shadow {:n 3 :m 0 :content "foobarbaz"}
                   :backup {:n 2 :m 0 :content "foobar"}
                   :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}
@@ -130,18 +136,21 @@
 
         (testing "When acknowledged, queue empties out"
           (a/>! in [{:n 3 :m 0 :diff (diff/diff "foobarbaz" "foobarbazqux")}])
-          (is (= {:snapshot "foobarbaz"
+          (is (= {:action :diff
+                  :snapshot "foobarbaz"
                   :shadow {:n 3 :m 1 :content "foobarbazqux"}
                   :backup {:n 3 :m 0 :content "foobarbaz"}
                   :edits-queue []}
                  (a/<! state)))
-          (is (= {:snapshot "foobarbazqux"
+          (is (= {:action :snapshot
+                  :snapshot "foobarbazqux"
                   :shadow {:n 3 :m 1 :content "foobarbazqux"}
                   :backup {:n 3 :m 0 :content "foobarbaz"}
                   :edits-queue []}
                  (a/<! state)))
           (a/>! sync :manual)
-          (is (= {:snapshot "foobarbazqux"
+          (is (= {:action :sync
+                  :snapshot "foobarbazqux"
                   :shadow {:n 4 :m 1 :content "foobarbazqux"}
                   :backup {:n 3 :m 1 :content "foobarbazqux"}
                   :edits-queue [{:n 1 :m 3 :diff {:+ [] :- []}}]}
@@ -157,10 +166,11 @@
         (testing "Queuing up first change"
           (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foo")}])
           (a/<! state)
-          (a/>! sync)
+          (a/>! sync :waow)
           (is (= [{:n 1 :m 0 :diff (diff/diff "" "")}]
                  (a/<! out)))
           (is (= "foo" @state)))
+
         (testing "Recovers after lost return packet"
           (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foo")}
                     {:n 0 :m 1 :diff (diff/diff "foo" "bar")}])
@@ -168,56 +178,6 @@
                  (a/<! out)))
           (is (= "bar" @state)))))))
 
-(deftest entangling-two-atoms
-  (let [A->B (a/chan 1) B->A (a/chan 1)
-        stateA (atom "")
-        stateB (atom "")
-        ackA (e/start-sync stateA B->A A->B :atom-a)
-        ackB (e/start-sync stateB A->B B->A :atom-b)]
-    (test-async
-      (a/go
-        (a/<! ackA)
-        (a/<! ackB)
-
-        (testing "Changing an atoms value updates the other"
-          (reset! stateA "foo")
-          (a/<! ackA)
-          (a/<! ackB)
-          (is (= "foo" @stateB))
-
-          (reset! stateB "bar")
-          (a/<! ackA)
-          (a/<! ackB)
-          (is (= "bar" @stateA) "Reseting stateB will update stateA"))
-
-        (testing "Changes to the atoms keep working"
-          (reset! stateA "FOO")
-          (a/<! ackB)
-          (a/<! ackA)
-          (is (= "FOO" @stateB))
-
-          (reset! stateA "FOOBAR")
-          (a/<! ackB)
-          (a/<! ackA)
-          (is (= "FOOBAR" @stateB))
-
-          (reset! stateA "FOO")
-          (a/<! ackB)
-          (a/<! ackA)
-          (is (= "FOO" @stateB))
-
-          (reset! stateB "HELLO")
-          (a/<! ackB)
-          (a/<! ackA)
-          (is (= "HELLO" @stateA))
-
-          (reset! stateB "HOW ARE YOU")
-          (a/<! ackB)
-          (a/<! ackA)
-          (is (= "HOW ARE YOU" @stateA)))
-
-
-        (a/close! A->B)))))
 
 (defn- random-chars
   "Generates an infinite stream of character from the alphabet."
@@ -369,7 +329,7 @@
   (let [f (future (do (normal-operation)
                       (duplicate-packet)
                       (lost-outbound-packet)
-                      (entangling-two-atoms)))]
+                      (two-way-fuzz-testing)))]
     (.get f 1000 java.util.concurrent.TimeUnit/MILLISECONDS)))
 
 :cljs
@@ -377,5 +337,3 @@
   (if (cljs.test/successful? m)
     (println "Success!")
     (println "FAIL"))))
-
-#_(cljs.test/run-tests)
