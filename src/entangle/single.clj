@@ -54,10 +54,24 @@
    :headers {"content-type" "text/html"}
    :body homepage})
 
+(defn cljs-compat-char
+  "Serializes data for consumption in CLJS. Converts any clojure rich
+  literals to use single strings.
+
+  This is a compatibility patch for ClojureScript's lack of rich
+  literal support in the reader.
+
+  See See http://dev.clojure.org/jira/browse/CLJS-1299 "
+  [data]
+  (->> data
+    (clojure.walk/prewalk (fn [x] (if (= (type x) java.lang.Character)
+                                   (str x) x)))))
+
 
 ;; Handler for aleph websockets
 (defn sync-handler
   [req]
+
   (d/let-flow [conn (d/catch (http/websocket-connection req)
                         #(timbre/error %))]
     (if-not conn
@@ -67,45 +81,40 @@
 
       (d/let-flow [client-id (s/take! conn)
                    successful (s/put! conn (pr-str @entangle-atom))]
-
+        (println "WAOW")
+        (timbre/warn "What happened")
         (if-not (or client-id successful)
           (timbre/warn "Initial handshake failed." client-id)
 
           ;; every new connection gets to sync with the same atom
-          (let [changes-in (a/chan)
-                changes-out (a/chan)
-                [sync state-change] (e/start-sync entangle-atom
-                                      changes-in changes-out client-id)]
+          (let [data-in  (a/chan)
+                data-out (a/chan)
+                sync     (a/chan)
+                changes  (a/chan)]
+            (e/start-sync entangle-atom data-in data-out client-id sync changes)
+
+            ;; Setup a go-loop that sends data whenever a snapshot even thappens
+            (a/go-loop []
+              (let [change (a/<! changes)]
+                (when (= :snapshot (:action change))
+                  (timbre/debug "Syncing to client.")
+                  (a/>! sync :pre-emptive)))
+              (recur))
+
             (timbre/debug "Client connected: " client-id)
 
             ;; server should pre-emptively push and then sleepy for 500 ms
-            (a/go-loop []
-              (a/<! state-change)
-              (recur))
-            (a/go-loop []
-              (a/>! sync :pre-emptive)
-              (a/<! (a/timeout 500))
-              (recur))
+
 
             ;; deserialize data, write into entangle
             ;; FIXME: according to the docs this will close the downstream channel
             ;;        automatically. Verify that
-            (s/connect (s/transform (map edn/read-string) conn) changes-in)
+            (s/connect (s/transform (map edn/read-string) conn) data-in)
 
             ;; serialize, write out to stream
             ;; TODO: does this cause deadlock if the channel gacks?
             (s/connect
-              (s/transform
-                (map (fn [diff]
-                       (timbre/debug "Server sending:" diff)
-                       (->> diff
-                         ;; FIXME: Stringify all characters because
-                         ;; ClojureScript's reader does not support rich literals.
-                         ;; See http://dev.clojure.org/jira/browse/CLJS-1299
-                         (clojure.walk/prewalk (fn [x] (if (= (type x) java.lang.Character)
-                                                        (str x) x)))
-                         pr-str)))
-                changes-out)
+              (s/transform (map (comp pr-str cljs-compat-char)) data-out)
               conn)))))))
 
 ;; Create the aleph server to synchronize with

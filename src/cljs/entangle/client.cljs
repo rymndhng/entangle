@@ -3,7 +3,7 @@
             [entangle.core :as e]
             [cljs.core.async :as a]
             [cljs.reader :as reader])
-  (:require-macros [cljs.core.async.macros :refer [go]]))
+  (:require-macros [cljs.core.async.macros :refer [go go-loop]]))
 
 (defn log [m] (println m))
 
@@ -54,7 +54,10 @@
 (defn- main []
   (let [ws-chan (a/chan)
         data-in (a/chan)
-        data-out (a/chan)]
+        data-out (a/chan)
+        sync-ch (a/chan)
+        changes-ch (a/chan)
+        ]
     ;; Do the websocket dance
     (log "main")
     (log "establishing websocket...")
@@ -77,36 +80,38 @@
                         (log (str "GOT:" (aget m "data")))
                         (go (a/>! ws-chan (aget m "data"))))]]))
 
+    ;; Setup another go-routine that prepares data for outward flow
+    (go-loop []
+        (let [data (a/<! data-out)]
+          (log (str "Sending diff to ws: " data))
+          (.send @websocket* (pr-str data)))
+        (recur))
+
+    ;; do syncing in 500 ms intervals
+    ;; Setup a go-loop that sends data whenever a snapshot even thappens
+    (go-loop []
+      (let [change (a/<! changes-ch)]
+        (log (str "Internal State:" (pr-str change)))
+        (when (= :snapshot (:action change))
+          (a/>! sync-ch :pre-emptive))
+        (a/<! (a/timeout 5000)))
+      (recur))
+
     ;; Setup the first go-routine that reads messages from the websocket channel
     (go
       ;; Take the first message off ws-chan and use it to setup the initial state
-      (let [initial-state (a/<! ws-chan)
-            _ (reset! textarea (reader/read-string initial-state))
-            [sync state-change] (e/start-sync textarea data-in data-out "webclient")]
+      (let [initial-state (a/<! ws-chan)]
+        (reset! textarea (reader/read-string initial-state))
+        (e/start-sync textarea data-in data-out "webclient" sync-ch changes-ch)
 
         (log (str "Initial State:" initial-state))
 
-        ;; do syncing in 500 ms intervals
-        (loop []
-          (a/<! state-change)
-          (a/>! sync :pre-emptive)
-          (a/<! (a/timeout 500))
-          (recur))
+        ;; pipeline the rest into textarea
+        (a/pipeline 1 data-in (map reader/read-string) ws-chan)
 
         ;; TODO: rework the frontend so we can easily notify when synced
         )
-
-      (aset (.getElementById js/document "render-text") "disabled" nil)
-
-      ;; pipeline the rest into textarea
-      (a/pipeline 1 data-in (map reader/read-string) ws-chan))
-
-    ;; Setup another go-routine that prepares data for outward flow
-    (go (loop []
-          (let [data (a/<! data-out)]
-            (log (str "Sending diff to ws: " data))
-            (.send @websocket* (pr-str data)))
-          (recur)))
+      (aset (.getElementById js/document "render-text") "disabled" nil))
 
     (aset js/window "onunload"
       (fn []
