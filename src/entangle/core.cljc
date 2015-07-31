@@ -145,11 +145,12 @@
 
                         data-in ([patch ch]
                                  (timbre/debug "Got data-in: " (pr-str patch))
-                                 (let [[next-state diffs] (handle-incoming-patch patch state)]
-                                   ;; TODO: should I care or should I swap eagerly
-                                   (when diffs
-                                     (swap! ref apply-all-edits diffs))
-                                   [next-state :diff])))]
+                                 (when patch
+                                   (let [[next-state diffs] (handle-incoming-patch patch state)]
+                                     ;; TODO: should I care or should I swap eagerly
+                                     (when (seq (remove empty-patch? diffs))
+                                       (swap! ref apply-all-edits diffs))
+                                     [next-state :diff]))))]
 
          (do (when state-changes-ch
                (a/>! state-changes-ch (assoc real-next-state :action action)))
