@@ -32,7 +32,7 @@
            ;; :build-id "example"
            })
 
-(defonce textarea (atom ""))
+(defonce entangle-atom (atom ""))
 
 ;; Setup some websocket stuff
 (defonce websocket* (atom nil))
@@ -42,14 +42,14 @@
   changes."
   (let [dom-textarea (.getElementById js/document "render-text")]
     ;; reactively re-render
-    (add-watch textarea :ui-render
+    (add-watch entangle-atom :ui-render
       (fn [key ref old-state new-state]
         (aset dom-textarea "value" (pr-str new-state))))
 
     ;; TODO: this is currently buggy and blows up
     #_(aset dom-textarea "onkeyup"
       (fn [x]
-        (reset! textarea (aget dom-textarea "value"))))))
+        (reset! entangle-atom (aget dom-textarea "value"))))))
 
 (defn- main []
   (let [ws-chan (a/chan)
@@ -102,16 +102,16 @@
     (go
       ;; Take the first message off ws-chan and use it to setup the initial state
       (let [initial-state (a/<! ws-chan)]
-        (reset! textarea (reader/read-string initial-state))
-        (e/start-sync textarea data-in data-out "webclient" sync-ch changes-ch)
+        (reset! entangle-atom (reader/read-string initial-state))
+        (e/start-sync entangle-atom data-in data-out "webclient" sync-ch changes-ch)
 
         (log (str "Initial State:" initial-state))
 
-        ;; pipeline the rest into textarea
+        ;; pipeline the rest into entangle-atom
         (a/pipeline 1 data-in (map reader/read-string) ws-chan)
 
         ;; trigger an initial sync
-        (swap! textarea identity)
+        (swap! entangle-atom identity)
 
         ;; TODO: rework the frontend so we can easily notify when synced
         )
