@@ -82,20 +82,22 @@
 
     ;; Setup another go-routine that prepares data for outward flow
     (go-loop []
-        (let [data (a/<! data-out)]
+        (when-let [data (a/<! data-out)]
           (log (str "Sending diff to ws: " data))
-          (.send @websocket* (pr-str data)))
-        (recur))
+          (.send @websocket* (pr-str data))
+          (recur))
+        (log "Writing out closed!"))
 
     ;; do syncing in 500 ms intervals
     ;; Setup a go-loop that sends data whenever a snapshot even thappens
     (go-loop []
-      (let [change (a/<! changes-ch)]
+      (when-let [change (a/<! changes-ch)]
         (log (str "Internal State:" (pr-str change)))
         (when (= :snapshot (:action change))
           (a/>! sync-ch :pre-emptive))
-        (a/<! (a/timeout 5000)))
-      (recur))
+        (a/<! (a/timeout 5000))
+        (recur))
+      (log "Writing out closed!"))
 
     ;; Setup the first go-routine that reads messages from the websocket channel
     (go

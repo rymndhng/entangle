@@ -87,17 +87,19 @@
           ;; every new connection gets to sync with the same atom
           (let [data-in  (a/chan)
                 data-out (a/chan)
-                sync     (a/chan)
+                sync     (a/chan (a/dropping-buffer 1))
                 changes  (a/chan)]
             (e/start-sync entangle-atom data-in data-out client-id sync changes)
 
             ;; Setup a go-loop that sends data whenever a snapshot even thappens
             (a/go-loop []
-              (let [change (a/<! changes)]
-                (when (= :snapshot (:action change))
-                  (timbre/debug "Syncing to client.")
-                  (a/>! sync :pre-emptive)))
-              (recur))
+              (if-let [change (a/<! changes)]
+                (do
+                  (when (= :snapshot (:action change))
+                    (timbre/debug "Syncing to client.")
+                    (a/>! sync :pre-emptive))
+                  (recur))
+                (timbre/debug "Watching changes closed.")))
 
             (timbre/debug "Client connected: " client-id)
 
