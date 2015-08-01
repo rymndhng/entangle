@@ -125,7 +125,7 @@
                        (a/close! state-changes-ch)))]
 
      ;; In Neil Fraser's Paper, this is the start of (1)
-     (add-watch ref watch-id #(go (a/>! user-changes %&)))
+     (add-watch ref watch-id #(a/put! user-changes %&))
 
      (go-loop [state {:snapshot    snapshot
                       :shadow      init-shadow
