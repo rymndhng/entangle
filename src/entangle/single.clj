@@ -81,8 +81,6 @@
 
       (d/let-flow [client-id (s/take! conn)
                    successful (s/put! conn (pr-str @entangle-atom))]
-        (println "WAOW")
-        (timbre/warn "What happened")
         (if-not (or client-id successful)
           (timbre/warn "Initial handshake failed." client-id)
 
@@ -130,28 +128,4 @@
 (comment
   (def s (http/start-server handler {:port 10000}))
   (.close s)
-  (future
-    (def ws-atom (atom ""))
-    (def ws-in (a/chan))
-    (def ws-out (a/chan))
-    (e/start-sync ws-atom ws-in ws-out :foo)
-
-    (def remote-conn @(http/websocket-client "ws://localhost:10000/sync"))
-    (s/connect
-      (s/transform (map edn/read-string) remote-conn)
-      ws-in)
-    (s/connect
-      (s/transform
-        (map (fn [x]
-               (println "remote:" x)
-               (pr-str x))) ws-out)
-      remote-conn)
-
-    ;; write a diff message into the websocket
-    (s/put! remote-conn "HERRO")
-    (s/put! remote-conn (str (clj-diff.core/diff  "" "FOO-BAR")))
-    (def result (s/take! remote-conn))
-    )
-  (= @entangle-atom @ws-atom)
-  (s/close! remote-conn)
 )
