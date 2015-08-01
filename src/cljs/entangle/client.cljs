@@ -55,9 +55,8 @@
   (let [ws-chan (a/chan)
         data-in (a/chan)
         data-out (a/chan)
-        sync-ch (a/chan)
-        changes-ch (a/chan)
-        ]
+        sync-ch (a/chan (a/dropping-buffer 1))
+        changes-ch (a/chan)]
     ;; Do the websocket dance
     (log "main")
     (log "establishing websocket...")
@@ -95,7 +94,7 @@
         (log (str "Internal State:" (pr-str change)))
         (when (= :snapshot (:action change))
           (a/>! sync-ch :pre-emptive))
-        (a/<! (a/timeout 5000))
+        (a/<! (a/timeout 500))
         (recur))
       (log "Writing out closed!"))
 
@@ -110,6 +109,9 @@
 
         ;; pipeline the rest into textarea
         (a/pipeline 1 data-in (map reader/read-string) ws-chan)
+
+        ;; trigger an initial sync
+        (swap! textarea identity)
 
         ;; TODO: rework the frontend so we can easily notify when synced
         )
