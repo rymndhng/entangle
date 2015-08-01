@@ -2,7 +2,8 @@
   (:require [figwheel.client :as fw]
             [entangle.core :as e]
             [cljs.core.async :as a]
-            [cljs.reader :as reader])
+            [cljs.reader :as reader]
+            [taoensso.timbre :as timbre])
   (:require-macros [cljs.core.async.macros :refer [go go-loop]]))
 
 (defn log [m] (println m))
@@ -37,26 +38,28 @@
 ;; Setup some websocket stuff
 (defonce websocket* (atom nil))
 
-(defn start-reactive-textarea []
+(defn start-reactive-textarea [write-ch]
   "Wrapper to setup the textarea to reactively render when 'textarea'
   changes."
   (let [dom-textarea (.getElementById js/document "render-text")]
     ;; reactively re-render
     (add-watch entangle-atom :ui-render
       (fn [key ref old-state new-state]
-        (aset dom-textarea "value" (pr-str new-state))))
+        (timbre/debug "New state:" new-state)
+        (aset dom-textarea "value" new-state)))
 
     ;; TODO: this is currently buggy and blows up
-    #_(aset dom-textarea "onkeyup"
+    (aset dom-textarea "onkeyup"
       (fn [x]
-        (reset! entangle-atom (aget dom-textarea "value"))))))
+        (a/put! write-ch (str (aget dom-textarea "value")))))))
 
 (defn- main []
   (let [ws-chan (a/chan)
         data-in (a/chan)
         data-out (a/chan)
         sync-ch (a/chan (a/dropping-buffer 1))
-        changes-ch (a/chan)]
+        changes-ch (a/chan)
+        <text-changes (a/chan (a/sliding-buffer 1))]
     ;; Do the websocket dance
     (log "main")
     (log "establishing websocket...")
@@ -117,6 +120,25 @@
         )
       (aset (.getElementById js/document "render-text") "disabled" nil))
 
+    ;; start that textarea
+    (start-reactive-textarea <text-changes)
+
+    ;; debounce changes to the nearest 500 ms
+    (go-loop []
+      (when-let [init-text (a/<! <text-changes)]
+        (->> (loop [text init-text
+                   <timeout (a/timeout 500)]
+               (let [[content ch] (a/alts! [<timeout <text-changes])]
+                 (if (= ch <timeout)
+                   (do
+                     (timbre/debug "Debounce ended")
+                     text)
+                   (do
+                     (timbre/debug "Debouncing")
+                     (recur content <timeout)))))
+          (reset! entangle-atom))
+        (recur)))
+
     (aset js/window "onunload"
       (fn []
         (log "unloading")
@@ -129,7 +151,5 @@
 (aset js/window "onload"
   (fn []
     ;; reactive text box!
-    (start-reactive-textarea)
-
     ;; enable start via main
     (aset (.getElementById js/document "start-btn") "onclick" main)))
