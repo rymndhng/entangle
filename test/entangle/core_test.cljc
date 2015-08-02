@@ -18,11 +18,11 @@
 
 (defn generate-entangle [key]
   "Test helper to create an "
-  (let [in    (a/chan 1)
-        out   (a/chan 1)
-        sync  (a/chan)
-        state (a/chan)
-        ref   (atom "")]
+  (let [in     (a/chan 1)
+        out    (a/chan 1)
+        sync   (a/chan)
+        state  (a/chan)
+        ref    (atom "")]
     (e/start-sync ref in out key sync state)
     {:in    in
      :out   out
@@ -36,7 +36,6 @@
       (let [{:keys [in out ref ack sync state]} (generate-entangle :foo)]
         (testing "Creating a patch sends a patch to the other side."
           (reset! ref "foo")
-          (a/<! state)
           (a/>! sync :manual)
           (a/<! state)
           (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}]
@@ -75,12 +74,6 @@
       (a/go
         (testing "Lost outbound packets queue up diffs"
           (reset! ref "foo")
-          (is (= {:action :snapshot
-                  :snapshot "foo"
-                  :shadow {:n 0 :m 0 :content ""}
-                  :backup {:n 0 :m 0 :content ""}
-                  :edits-queue []}
-                 (a/<! state)))
           (a/>! sync :manual)
           (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}]
                  (a/<! out)))
@@ -93,12 +86,6 @@
 
         (testing "queue up more changes"
           (reset! ref "foobar")
-          (is (= {:action :snapshot
-                  :snapshot "foobar"
-                  :shadow {:n 1 :m 0 :content "foo"}
-                  :backup {:n 0 :m 0 :content ""}
-                  :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}]}
-                 (a/<! state)))
           (a/>! sync :manual)
           (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}
                   {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}]
@@ -113,13 +100,6 @@
 
         (testing "queueing up baz"
           (reset! ref "foobarbaz")
-          (is (= {:action :snapshot
-                  :snapshot "foobarbaz"
-                  :shadow {:n 2 :m 0 :content "foobar"}
-                  :backup {:n 1 :m 0 :content "foo"}
-                  :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}
-                                {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}]}
-                 (a/<! state)))
           (a/>! sync :manual)
           (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}
                   {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}
@@ -138,12 +118,6 @@
           (a/>! in [{:n 3 :m 0 :diff (diff/diff "foobarbaz" "foobarbazqux")}])
           (is (= {:action :diff
                   :snapshot "foobarbaz"
-                  :shadow {:n 3 :m 1 :content "foobarbazqux"}
-                  :backup {:n 3 :m 0 :content "foobarbaz"}
-                  :edits-queue []}
-                 (a/<! state)))
-          (is (= {:action :snapshot
-                  :snapshot "foobarbazqux"
                   :shadow {:n 3 :m 1 :content "foobarbazqux"}
                   :backup {:n 3 :m 0 :content "foobarbaz"}
                   :edits-queue []}
@@ -169,14 +143,17 @@
           (a/>! sync :waow)
           (is (= [{:n 1 :m 0 :diff (diff/diff "" "")}]
                  (a/<! out)))
-          (is (= "foo" @state)))
+          (a/<! state)
+          (is (= "foo" @ref)))
 
         (testing "Recovers after lost return packet"
           (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foo")}
                     {:n 0 :m 1 :diff (diff/diff "foo" "bar")}])
+          (a/<! state)
+          (a/>! sync :waow)
           (is (= [{:n 2 :m 0 :diff (diff/diff "" "")}]
                  (a/<! out)))
-          (is (= "bar" @state)))))))
+          (is (= "bar" @ref)))))))
 
 
 (defn- random-chars
@@ -197,8 +174,8 @@
      (lazy-seq (random-strings length)))))
 
 (deftest two-way-fuzz-testing
-  (let [iterations 100
-        str-len 100
+  (let [iterations 2
+        str-len 5
         entangle-A (generate-entangle :a)
         entangle-B (generate-entangle :b)
         a-done (a/chan 1)
@@ -209,8 +186,8 @@
       (recur))
 
     ;; connect friends
-    (a/pipe (:in entangle-A) (:out entangle-B))
-    (a/pipe (:in entangle-B) (:out entangle-A))
+    (a/pipe (:out entangle-B) (:in entangle-A))
+    (a/pipe (:out entangle-A) (:in entangle-B))
 
     (a/go (doseq [val (take iterations (random-strings str-len))]
             (reset! (:ref entangle-A) val)
@@ -226,12 +203,13 @@
             (a/<! (a/timeout (rand-int 100))))
           (a/close! b-done))
 
-    (a/go
-      (a/<! a-done)
-      (a/<! b-done)
-      ;; trigger one more sync
-      (a/>! (:sync entangle-A) :last-one)
-      (is (= @(:ref entangle-A) @(:ref entangle-B))))))
+    (test-async
+      (a/go
+        (a/<! a-done)
+        (a/<! b-done)
+        ;; trigger one more sync
+        (a/>! (:sync entangle-B) :last-one)
+        (is (= @(:ref entangle-A) @(:ref entangle-B)))))))
 
 (deftest concurrent-writes-are-deterministic
   []
@@ -329,8 +307,9 @@
   (let [f (future (do (normal-operation)
                       (duplicate-packet)
                       (lost-outbound-packet)
+                      (lost-returning-packet)
                       (two-way-fuzz-testing)))]
-    (.get f 1000 java.util.concurrent.TimeUnit/MILLISECONDS)))
+    (.get f 5000 java.util.concurrent.TimeUnit/MILLISECONDS)))
 
 :cljs
 (defmethod cljs.test/report [:cljs.test/default :end-run-tests] [m]

@@ -17,7 +17,7 @@
                  [taoensso.timbre :as timbre])]
       ))
 
-(timbre/set-level! :warn)
+(timbre/set-level! :info)
 
 (defn valid-patch?
   "Validate an incoming patch object. It needs to be a map with
@@ -57,15 +57,16 @@
 
 (defn- prepare-patch
   "Implements part 2,3 of algorithm from state."
-  [{:keys [snapshot shadow backup edits-queue] :as state}]
+  [snapshot {:keys [shadow backup edits-queue] :as state}]
   (let [patch {:n (:m shadow)
                :m (:n shadow)
                :diff (diff/diff (:content shadow) snapshot)}]
-    (merge state {:shadow (-> shadow
-                            (update :n inc)
-                            (assoc :content snapshot))
-                  :backup shadow
-                  :edits-queue (conj edits-queue patch)})))
+    {:snapshot snapshot
+     :shadow (-> shadow
+               (update :n inc)
+               (assoc :content snapshot))
+     :backup shadow
+     :edits-queue (conj edits-queue patch)}))
 
 (defn- handle-incoming-patch
   "Implements part 5,6,7 of algorithm. Returns a tuple of two elements
@@ -116,35 +117,25 @@
    (let [snapshot     @ref
          watch-id     (gensym :diff-sync)
          init-shadow  {:n 0 :m 0 :content snapshot}
-         user-changes (a/chan)
          shutdown! (fn []
                      (timbre/info id "entangle shutting down... ")
                      (remove-watch ref watch-id)
                      (doall (map a/close! [data-in data-out sync-ch state-changes-ch]))
                      (when state-changes-ch
                        (a/close! state-changes-ch)))]
-
-     ;; In Neil Fraser's Paper, this is the start of (1)
-     (add-watch ref watch-id #(a/put! user-changes %&))
-
      (go-loop [state {:snapshot    snapshot
                       :shadow      init-shadow
                       :backup      init-shadow
                       :edits-queue []}]
-
+       (timbre/debug id " Start of loop " state)
        (if-let [[real-next-state action]
                 (a/alt! sync-ch ([cause ch]
-                                 (timbre/debug "Sync triggered by " cause)
-                                 (let [{:keys [edits-queue] :as next-state} (prepare-patch state)]
-                                   (when (a/>! data-out edits-queue)
+                                 (timbre/debug id " Syncing Cause " cause)
+                                 (let [{:keys [edits-queue] :as next-state} (prepare-patch @ref state)]
+                                   (if (a/>! data-out edits-queue)
                                      [next-state :sync])))
-
-                        user-changes ([[_ _ _ snapshot] ch]
-                                      (timbre/debug "User changes: " snapshot)
-                                      [(assoc state :snapshot snapshot) :snapshot])
-
                         data-in ([patch ch]
-                                 (timbre/debug "Got data-in: " (pr-str patch))
+                                 (timbre/debug id " Got data-in: " (pr-str patch))
                                  (when patch
                                    (let [[next-state diffs] (handle-incoming-patch patch state)]
                                      ;; TODO: should I care or should I swap eagerly
