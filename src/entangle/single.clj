@@ -13,7 +13,7 @@
    [taoensso.timbre :as timbre]
    [hiccup.core :as h]))
 
-(timbre/set-level! :debug)
+(timbre/set-level! :warn)
 
 (def homepage
   (h/html
@@ -67,11 +67,19 @@
     (clojure.walk/prewalk (fn [x] (if (= (type x) java.lang.Character)
                                    (str x) x)))))
 
-
-;; Handler for aleph websockets
 (defn sync-handler
-  [req]
+  "Defines the steps to setup a synchronizing atom starting from an
+  initial web socket requests.
 
+  Once the websocket connection is established, we start listening to
+  changes to `entangle-atom`. This sets up:
+
+  1. Duplex connection for listening and writing diffs to the websocket
+  2. Event handler for listening to when `entangle-atom` changes and also how to
+  write and read diffs from the websocket
+  3. Throttling mechanism to control the rate of change processing.
+  "
+  [req]
   (d/let-flow [conn (d/catch (http/websocket-connection req)
                         #(timbre/error %))]
     (if-not conn
@@ -83,39 +91,28 @@
                    successful (s/put! conn (pr-str @entangle-atom))]
         (if-not (or client-id successful)
           (timbre/warn "Initial handshake failed." client-id)
-
-          ;; every new connection gets to sync with the same atom
           (let [data-in  (a/chan)
                 data-out (a/chan)
                 sync     (a/chan (a/dropping-buffer 1))
                 changes  (a/chan)]
+            (timbre/debug "Client connected: " client-id)
+
             (e/start-sync entangle-atom data-in data-out client-id sync changes)
 
-            ;; Setup a go-loop that sends data whenever a snapshot even thappens
+            ;; Controls the frequency of event processing. This is arbitrariliy
+            ;; chosen to be 16 ms.
             (a/go-loop []
               (if-let [change (a/<! changes)]
                 (do
-                  (when (= :snapshot (:action change))
-                    (timbre/debug "Syncing to client.")
-                    (a/>! sync :pre-emptive))
+                  (a/<! (a/timeout 16))
                   (recur))
                 (timbre/debug "Watching changes closed.")))
 
-            (timbre/debug "Client connected: " client-id)
-
-            ;; server should pre-emptively push and then sleepy for 500 ms
-
-
-            ;; deserialize data, write into entangle
-            ;; FIXME: according to the docs this will close the downstream channel
-            ;;        automatically. Verify that
-            (s/connect (s/transform (map edn/read-string) conn) data-in)
-
-            ;; serialize, write out to stream
-            ;; TODO: does this cause deadlock if the channel gacks?
-            (s/connect
-              (s/transform (map (comp pr-str cljs-compat-char)) data-out)
-              conn)))))))
+            ;; Serialize and de-serialize the channels into the websocket
+            (let [deserialize (map edn/read-string)
+                  serialize (map (comp pr-str cljs-compat-char))]
+              (s/connect (s/transform deserialize conn) data-in)
+              (s/connect (s/transform serialize data-out) conn))))))))
 
 ;; Create the aleph server to synchronize with
 (def handler
@@ -127,7 +124,9 @@
       (route/not-found "No such page."))))
 
 ;; Check that things are actually working
-(comment
-  (def s (http/start-server handler {:port 10000}))
-  (.close s)
-)
+(defn start []
+  (when-let [server (find-var 'entangle.single/server)]
+    (-> server
+      var-get
+      .close))
+  (def server (http/start-server handler {:port 10000})))
