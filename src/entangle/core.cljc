@@ -101,15 +101,11 @@
   when it's state changes or when a patch is sent via data-in.
 
   ref       the reference object to synchronize
-  id        id for debugging
   data-in   core.async channel for writing patches to
   data-out  core.async channel for reading patches from
-  sync-ch   channel where writes to it trigger a sync
-  changes   channel where changes to internal state are published
-
-  For differential sync to work properly, the entangled atoms need to
-  take turns talking to each other. This can be achieved by sending an
-  empty patch using `poke`.
+  id        id for debugging
+  sync-ch   channel used for signalling diff-sync to perform remote synchronization
+  state-changes-ch publishes the state changes of this object
 
   This is an implementation of Neil Fraser's `Differential Sync'.
   "
@@ -123,6 +119,7 @@
                      (doall (map a/close! [data-in data-out sync-ch state-changes-ch]))
                      (when state-changes-ch
                        (a/close! state-changes-ch)))]
+     (add-watch ref watch-id (fn [_ _ _ _] (a/put! sync-ch :state-changed)))
      (go-loop [state {:snapshot    snapshot
                       :shadow      init-shadow
                       :backup      init-shadow
