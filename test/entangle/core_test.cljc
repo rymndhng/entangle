@@ -36,7 +36,6 @@
       (let [{:keys [in out ref ack sync state]} (generate-entangle :foo)]
         (testing "Creating a patch sends a patch to the other side."
           (reset! ref "foo")
-          (a/>! sync :manual)
           (a/<! state)
           (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}]
                  (a/<! out))))
@@ -74,7 +73,6 @@
       (a/go
         (testing "Lost outbound packets queue up diffs"
           (reset! ref "foo")
-          (a/>! sync :manual)
           (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}]
                  (a/<! out)))
           (is (= {:action :sync
@@ -86,7 +84,6 @@
 
         (testing "queue up more changes"
           (reset! ref "foobar")
-          (a/>! sync :manual)
           (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}
                   {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}]
                  (a/<! out)))
@@ -100,7 +97,6 @@
 
         (testing "queueing up baz"
           (reset! ref "foobarbaz")
-          (a/>! sync :manual)
           (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}
                   {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}
                   {:n 0 :m 2 :diff (diff/diff "foobar" "foobarbaz")}]
@@ -122,7 +118,6 @@
                   :backup {:n 3 :m 0 :content "foobarbaz"}
                   :edits-queue []}
                  (a/<! state)))
-          (a/>! sync :manual)
           (is (= {:action :sync
                   :snapshot "foobarbazqux"
                   :shadow {:n 4 :m 1 :content "foobarbazqux"}
