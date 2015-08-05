@@ -45,8 +45,9 @@
     ;; reactively re-render
     (add-watch entangle-atom :ui-render
       (fn [key ref old-state new-state]
-        (timbre/debug "New state:" new-state)
-        (aset dom-textarea "value" new-state)))
+        ;; (timbre/debug "New state:" new-state)
+        (when (not (= @entangle-atom (aget dom-textarea "value")))
+          (aset dom-textarea "value" new-state))))
 
     ;; TODO: this is currently buggy and blows up
     (aset dom-textarea "onkeyup"
@@ -59,11 +60,12 @@
         data-out (a/chan)
         sync-ch (a/chan (a/dropping-buffer 1))
         changes-ch (a/chan)
-        <text-changes (a/chan (a/sliding-buffer 1))]
+        <text-changes (a/chan (a/sliding-buffer 1))
+        host (aget js/window "location" "host")]
     ;; Do the websocket dance
     (log "main")
     (log "establishing websocket...")
-    (reset! websocket* (js/WebSocket. "ws://localhost:10000/sync"))
+    (reset! websocket* (js/WebSocket. (str "ws://" host "/sync")))
 
     ;; Setup the websocket object to respond to the messages
     (doall
@@ -93,13 +95,12 @@
     ;; do syncing in 500 ms intervals
     ;; Setup a go-loop that sends data whenever a snapshot even thappens
     (go-loop []
-      (when-let [change (a/<! changes-ch)]
-        (log (str "Internal State:" (pr-str change)))
-        (when (= :snapshot (:action change))
-          (a/>! sync-ch :pre-emptive))
-        (a/<! (a/timeout 500))
-        (recur))
-      (log "Writing out closed!"))
+      (if-let [change (a/<! changes-ch)]
+        (do
+          (log (str "Changes: " change))
+          (a/timeout 200)
+          (recur))
+        (log "Writing out closed!")))
 
     ;; Setup the first go-routine that reads messages from the websocket channel
     (go
@@ -127,14 +128,14 @@
     (go-loop []
       (when-let [init-text (a/<! <text-changes)]
         (->> (loop [text init-text
-                   <timeout (a/timeout 500)]
+                    <timeout (a/timeout 16)]
                (let [[content ch] (a/alts! [<timeout <text-changes])]
                  (if (= ch <timeout)
                    (do
-                     (timbre/debug "Debounce ended")
+                     (log (str "Debounce ended:" text))
                      text)
                    (do
-                     (timbre/debug "Debouncing")
+                     (log "Debouncing")
                      (recur content <timeout)))))
           (reset! entangle-atom))
         (recur)))

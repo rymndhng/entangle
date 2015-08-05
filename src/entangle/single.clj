@@ -13,7 +13,7 @@
    [taoensso.timbre :as timbre]
    [hiccup.core :as h]))
 
-(timbre/set-level! :warn)
+(timbre/set-level! :info)
 
 (def homepage
   (h/html
@@ -39,11 +39,9 @@
           " "
           [:input.btn.btn-primary {:id "start-btn" :type "button" :value "Start"}]]]]
        [:div {:class "row"}
-        [:div {:class "col-xs-6"}
+        [:div {:class "col-xs-12"}
          [:textarea.form-control {:id "render-text" :cols 80 :rows 10 :disabled true}]]
-        [:div {:class "col-xs-6"}
-         [:p "Changes"]
-         [:div#repr]]]]]]))
+        ]]]]))
 
 ; An entangle is a single atom to sync. This will make interacting with it simpler
 (def entangle-atom (atom ""))
@@ -124,9 +122,11 @@
       (route/not-found "No such page."))))
 
 ;; Check that things are actually working
-(defn start []
-  (when-let [server (find-var 'entangle.single/server)]
-    (-> server
-      var-get
-      .close))
-  (def server (http/start-server handler {:port 10000})))
+(defn main- [& args]
+  (let [port (or (first args) 10000)]
+    (timbre/info "Serving entangle on port " port)
+    (when-let [server (find-var 'entangle.single/server)]
+      (-> server
+        var-get
+        .close))
+    (def server (http/start-server handler {:port port}))))
