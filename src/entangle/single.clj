@@ -1,5 +1,6 @@
 ;; Step 1: Implement a single atom which is multiplexed over an aleph manifold
 (ns entangle.single
+  (:gen-class)
   (:require
    [compojure.core :as compojure :refer [GET]]
    [ring.middleware.params :as params]
@@ -121,12 +122,16 @@
       (route/resources "/public")
       (route/not-found "No such page."))))
 
-;; Check that things are actually working
-(defn main- [& args]
+;; For working on REPL
+(defn start []
+  (when-let [server (find-var 'entangle.single/server)]
+    (-> server
+      var-get
+      .close))
+  (def server (http/start-server handler {:port 10000})))
+
+(defn -main
+  [& args]
   (let [port (or (first args) 10000)]
     (timbre/info "Serving entangle on port " port)
-    (when-let [server (find-var 'entangle.single/server)]
-      (-> server
-        var-get
-        .close))
-    (def server (http/start-server handler {:port port}))))
+    (http/start-server handler {:port port})))

@@ -18,6 +18,8 @@
                  [hiccup "1.0.5"]
                  [figwheel "0.2.7"]]
 
+  :main entangle.single
+
   :plugins [[lein-cljsbuild "1.0.6"]
             [lein-figwheel "0.3.7"]]
 
