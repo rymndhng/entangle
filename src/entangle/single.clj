@@ -122,16 +122,11 @@
       (route/resources "/public")
       (route/not-found "No such page."))))
 
-;; For working on REPL
-(defn start []
-  (when-let [server (find-var 'entangle.single/server)]
-    (-> server
-      var-get
-      .close))
-  (def server (http/start-server handler {:port 10000})))
-
 (defn -main
   [& args]
   (let [port (or (first args) 10000)]
     (timbre/info "Serving entangle on port " port)
-    (http/start-server handler {:port port})))
+    (let [server-var (find-var 'entangle.single/server)]
+      (when (bound? server-var)
+        (.close (var-get server-var))))
+    (def server (http/start-server handler {:port port}))))
