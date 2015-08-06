@@ -3,7 +3,8 @@
             [entangle.core :as e]
             [cljs.core.async :as a]
             [cljs.reader :as reader]
-            [taoensso.timbre :as timbre])
+            [taoensso.timbre :as timbre]
+            [clojure.string :as string])
   (:require-macros [cljs.core.async.macros :refer [go go-loop]]))
 
 (defn log [m] (println m))
@@ -61,11 +62,13 @@
         sync-ch (a/chan (a/dropping-buffer 1))
         changes-ch (a/chan)
         <text-changes (a/chan (a/sliding-buffer 1))
-        host (aget js/window "location" "host")]
+        ws-path (str "ws:"
+                  (string/join "" (drop 5 (aget js/window "location" "href")))
+                  "sync")]
     ;; Do the websocket dance
     (log "main")
     (log "establishing websocket...")
-    (reset! websocket* (js/WebSocket. (str "ws://" host "/sync")))
+    (reset! websocket* (js/WebSocket. ws-path))
 
     ;; Setup the websocket object to respond to the messages
     (doall
