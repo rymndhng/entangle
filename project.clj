@@ -23,8 +23,9 @@
 
   :plugins [[lein-cljsbuild "1.0.6"]]
 
-  :cljsbuild {:builds {:app {:source-paths ["src"]
+  :cljsbuild {:builds {:app {:source-paths ["src" "src/cljs"]
                              :compiler {:main "cljs.user"
+                                        :asset-path "public/js/out"
                                         :output-to  "resources/public/js/app.js"
                                         :output-dir "resources/public/js/out"
                                         :source-map "resources/public/js/out.js.map"
