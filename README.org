@@ -46,6 +46,14 @@ functionality easier. In particular:
      makes modelling event loops simpler. It's lightweight concurrency also
      abstracts away the lack of threading in Javascript.
 
+* Building
+
+** Standalone Build
+
+#+BEGIN_SRC
+lein with-profile uberjar uberjar
+#+END_SRC
+
 * License
 Copyright © 2015 rymndhng
 

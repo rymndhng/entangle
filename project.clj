@@ -15,26 +15,36 @@
                  [compojure "1.3.3"]
 
                  ;; frontend
-                 [hiccup "1.0.5"]
-                 [figwheel "0.2.7"]]
+                 [hiccup "1.0.5"]]
 
   :main entangle.single
   ;; Contains generated javascripts
   :resource-paths ["resources"]
 
-  :plugins [[lein-cljsbuild "1.0.6"]
-            [lein-figwheel "0.3.7"]]
+  :plugins [[lein-cljsbuild "1.0.6"]]
 
-  :cljsbuild {:builds [{:id "local"
-                        :source-paths ["src"]
-                        :compiler {:output-to  "resources/public/js/app.js"
-                                   :output-dir "resources/public/js/out"
-                                   :source-map "resources/publis/js/out.js.map"
-                                   :optimizations :none
-                                   :source-maps true}}
-                       {:id "test"
-                        :source-paths ["src" "test"]
-                        :compiler {:output-to "target/testable.js"
-                                   :optimizations :simple
-                                   :pretty-print true}}]
-              :test-commands {"unit-tests" ["node" "target/testable.js"]}})
+  :cljsbuild {:builds {:app {:source-paths ["src"]
+                             :compiler {:main "cljs.user"
+                                        :output-to  "resources/public/js/app.js"
+                                        :output-dir "resources/public/js/out"
+                                        :source-map "resources/public/js/out.js.map"
+                                        :optimizations :none
+                                        :source-maps true}}}}
+
+  :profiles {:dev {:source-paths ["env/dev"]
+                   :dependencies [[figwheel "0.2.7"]]
+                   :plugins [[lein-figwheel "0.3.7"]]
+                   :cljsbuild {:test-commands {"unit-tests" ["node" "target/testable.js"]}
+                               :builds {:app {:source-paths ["env/dev"]}
+                                        :test {:source-paths ["src" "test"]
+                                               :compiler {:output-to "target/testable.js"
+                                                          :optimizations :simple
+                                                          :pretty-print true}}}}}
+             :uberjar {:hooks [leiningen.cljsbuild]
+                       :aot :all
+                       :omit-source true
+                       :cljsbuild {:builds {:app
+                                            {:source-paths ["env/prod"]
+                                             :compiler
+                                             {:optimizations :advanced
+                                              :pretty-print false}}}}}})

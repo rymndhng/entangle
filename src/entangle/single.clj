@@ -22,9 +22,7 @@
      [:head
       [:link {:rel "stylesheet" :href "https://maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css"}]
       [:script {:type "text/javascript" :src "public/js/out/goog/base.js"}]
-      [:script {:type "text/javascript" :src "public/js/app.js"}]
-      [:script {:type "text/javascript"} "goog.require('entangle.client');"]
-      ]
+      [:script {:type "text/javascript" :src "public/js/app.js"}]]
      [:body
       [:div {:class "container"}
        [:div {:class "row"}
