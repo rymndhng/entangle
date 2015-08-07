@@ -25,3 +25,6 @@
            ;; the client to focus on
            ;; :build-id "example"
            })
+
+;; Too lazy to press start!
+(e/main)

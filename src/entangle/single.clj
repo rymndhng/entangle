@@ -21,8 +21,7 @@
     [:html
      [:head
       [:link {:rel "stylesheet" :href "https://maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css"}]
-      [:script {:type "text/javascript" :src "public/js/out/goog/base.js"}]
-      [:script {:type "text/javascript" :src "public/js/app.js"}]]
+      ]
      [:body
       [:div {:class "container"}
        [:div {:class "row"}
@@ -40,7 +39,9 @@
        [:div {:class "row"}
         [:div {:class "col-xs-12"}
          [:textarea.form-control {:id "render-text" :cols 80 :rows 10 :disabled true}]]
-        ]]]]))
+        ]]
+      [:script {:type "text/javascript" :src "public/js/out/goog/base.js"}]
+      [:script {:type "text/javascript" :src "public/js/app.js"}]]]))
 
 ; An entangle is a single atom to sync. This will make interacting with it simpler
 (def entangle-atom (atom ""))

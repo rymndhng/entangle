@@ -29,8 +29,8 @@
       (fn [x]
         (a/put! write-ch (str (aget dom-textarea "value")))))))
 
-(defn- main []
-  (let [ws-chan (a/chan)
+(defn main []
+  (let [ws-chan (a/chan 20) ;; buffer changes against external environment
         data-in (a/chan)
         data-out (a/chan)
         sync-ch (a/chan (a/dropping-buffer 1))
@@ -59,7 +59,7 @@
                         (a/close! data-in))]
          ["onmessage" (fn [m]
                         (log (str "GOT:" (aget m "data")))
-                        (go (a/>! ws-chan (aget m "data"))))]]))
+                        (a/put! ws-chan (aget m "data")))]]))
 
     ;; Setup another go-routine that prepares data for outward flow
     (go-loop []
