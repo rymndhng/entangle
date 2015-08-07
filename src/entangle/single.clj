@@ -109,7 +109,7 @@
             ;; Serialize and de-serialize the channels into the websocket
             (let [deserialize (map edn/read-string)
                   serialize (map (comp pr-str cljs-compat-char))]
-              (s/connect (s/transform deserialize conn) data-in)
+              (s/connect (s/transform deserialize (s/buffer 100 conn)) data-in)
               (s/connect (s/transform serialize data-out) conn))))))))
 
 ;; Create the aleph server to synchronize with
