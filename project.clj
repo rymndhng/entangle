@@ -17,7 +17,7 @@
                  ;; frontend
                  [hiccup "1.0.5"]]
 
-  :main entangle.single
+  :main entangle.daemon
   ;; Contains generated javascripts
   :resource-paths ["resources"]
 

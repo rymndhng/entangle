@@ -1,5 +1,5 @@
 ;; Step 1: Implement a single atom which is multiplexed over an aleph manifold
-(ns entangle.single
+(ns entangle.daemon
   (:gen-class)
   (:require
    [compojure.core :as compojure :refer [GET]]
@@ -98,7 +98,8 @@
             (e/start-sync entangle-atom data-in data-out client-id sync changes)
 
             ;; Controls the frequency of event processing. This is arbitrariliy
-            ;; chosen to be 16 ms.
+            ;; chosen to be 500 ms so that changes can coalesce from multiple
+            ;; clients
             (a/go-loop []
               (if-let [change (a/<! changes)]
                 (do
@@ -124,8 +125,8 @@
 (defn -main
   [& args]
   (let [port (or (first args) 10000)]
-    (timbre/info "Serving entangle on port " port)
-    (let [server-var (find-var 'entangle.single/server)]
+    (let [server-var (find-var 'entangle.daemon/server)]
       (when (bound? server-var)
         (.close (var-get server-var))))
+    (timbre/info "Serving entangle on port " port)
     (def server (http/start-server handler {:port port}))))
