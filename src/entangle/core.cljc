@@ -47,7 +47,7 @@
   (try
     (diff/patch base patch)
     (catch #?(:clj Exception
-              :cljs (js/Error.)) e
+              :cljs js/Error) e
       (timbre/warn "Unable to apply to base: " base " Patch: " patch)
       base)))
 
