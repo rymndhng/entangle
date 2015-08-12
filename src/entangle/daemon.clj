@@ -21,7 +21,7 @@
     [:html
      [:head
       [:link {:rel "stylesheet" :href "https://maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css"}]
-      ]
+      [:link {:rel "stylesheet" :href "public/lib/codemirror.css"}]]
      [:body
       [:div {:class "container"}
        [:div {:class "row"}
@@ -38,8 +38,9 @@
           [:input.btn.btn-primary {:id "start-btn" :type "button" :value "Start"}]]]]
        [:div {:class "row"}
         [:div {:class "col-xs-12"}
-         [:textarea.form-control {:id "render-text" :cols 80 :rows 10 :disabled true}]]
-        ]]
+         [:div#render-text]]]]
+      [:script {:type "text/javascript" :src "public/lib/codemirror.js"}]
+      [:script {:type "text/javascript" :src "public/lib/mode/javascript/javascript.js"}]
       [:script {:type "text/javascript" :src "public/js/out/goog/base.js"}]
       [:script {:type "text/javascript" :src "public/js/app.js"}]]]))
 
@@ -92,7 +93,7 @@
           (let [data-in  (a/chan)
                 data-out (a/chan)
                 sync     (a/chan (a/dropping-buffer 1))
-                changes  (a/chan)]
+                changes  nil]
             (timbre/debug "Client connected: " client-id)
 
             (e/start-sync entangle-atom data-in data-out client-id sync changes)
@@ -101,9 +102,9 @@
             ;; chosen to be 500 ms so that changes can coalesce from multiple
             ;; clients
             (a/go-loop []
-              (if-let [change (a/<! changes)]
+              (if (a/>! sync :now)
                 (do
-                  (a/<! (a/timeout 16))
+                  (a/<! (a/timeout 1000))
                   (recur))
                 (timbre/debug "Watching changes closed.")))
 

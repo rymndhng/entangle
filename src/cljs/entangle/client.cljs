@@ -6,6 +6,15 @@
             [clojure.string :as string])
   (:require-macros [cljs.core.async.macros :refer [go go-loop]]))
 
+
+(defonce codeMirror (js/CodeMirror
+                      (.getElementById js/document "render-text")
+                      #js {:value "This is the beginning"}
+                           :mode "javascript"
+                           :onChange (fn [from to text next]
+                                       (println "From: " from)
+                                       (println "To: " to))))
+
 (defn log [m] (println m))
 
 (defonce entangle-atom (atom ""))
@@ -22,10 +31,10 @@
       (fn [key ref old-state new-state]
         ;; (timbre/debug "New state:" new-state)
         (when (not (= @entangle-atom (aget dom-textarea "value")))
-          (aset dom-textarea "value" new-state))))
+          (.setValue codeMirror new-state))))
 
     ;; TODO: this is currently buggy and blows up
-    (aset dom-textarea "onkeyup"
+    #_(aset dom-textarea "onkeyup"
       (fn [x]
         (a/put! write-ch (str (aget dom-textarea "value")))))))
 
@@ -34,7 +43,7 @@
         data-in (a/chan)
         data-out (a/chan)
         sync-ch (a/chan (a/dropping-buffer 1))
-        changes-ch (a/chan)
+        changes-ch nil
         <text-changes (a/chan (a/sliding-buffer 1))
         ws-path (str "ws:"
                   (string/join "" (drop 5 (aget js/window "location" "href")))
@@ -72,12 +81,10 @@
     ;; do syncing in 500 ms intervals
     ;; Setup a go-loop that sends data whenever a snapshot even thappens
     (go-loop []
-      (if-let [change (a/<! changes-ch)]
-        (do
-          (log (str "Changes: " change))
-          (a/timeout 200)
-          (recur))
-        (log "Writing out closed!")))
+      (when (a/>! sync-ch :now)
+        (a/<! (a/timeout 1000))
+        (recur))
+      (timbre/debug "Watching changes closed."))
 
     ;; Setup the first go-routine that reads messages from the websocket channel
     (go
@@ -96,7 +103,7 @@
 
         ;; TODO: rework the frontend so we can easily notify when synced
         )
-      (aset (.getElementById js/document "render-text") "disabled" nil))
+      #_(aset (.getElementById js/document "render-text") "disabled" nil))
 
     ;; start that textarea
     (start-reactive-textarea <text-changes)
@@ -105,7 +112,7 @@
     (go-loop []
       (when-let [init-text (a/<! <text-changes)]
         (->> (loop [text init-text
-                    <timeout (a/timeout 16)]
+                    <timeout (a/timeout 32)]
                (let [[content ch] (a/alts! [<timeout <text-changes])]
                  (if (= ch <timeout)
                    (do
@@ -125,6 +132,7 @@
         (reset! @websocket* nil))))
 
   (log "ready to go"))
+
 
 (aset js/window "onload"
   (fn []
