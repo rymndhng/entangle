@@ -16,6 +16,32 @@
      :cljs  (async done
               (a/take! ch (fn [_] (done))))))
 
+(deftest client-in-sync-with-remote-shadow
+  "Writes should be commutative no?"
+  (test-async
+    (a/go
+      (let [a (atom "")
+            b (atom "")
+            a->b (a/chan)
+            b->a (a/chan)
+            write-a (a/chan)
+            write-b (a/chan)
+            ack-a (a/chan)
+            ack-b (a/chan)]
+        (e/start-sync a b->a a->b "A" write-a ack-a)
+        (e/start-sync b a->b b->a "B" write-b ack-b)
+        (dotimes [n 5]
+          (let [val-a   (swap! a str "A")
+                _       (a/>! write-a :waow)
+                _       (a/<! ack-a)
+                state-b (a/<! ack-b)]
+            (is (= val-a (get-in state-b [:shadow :content]))))
+          (let [val-b   (swap! b str "B")
+                _       (a/>! write-b :waow)
+                _       (a/<! ack-b)
+                state-a (a/<! ack-a)]
+            (is (= val-b(get-in state-a [:shadow :content])))))))))
+
 (defn generate-entangle [key]
   "Test helper to create an "
   (let [in     (a/chan 1)
@@ -36,34 +62,44 @@
       (let [{:keys [in out ref ack sync state]} (generate-entangle :foo)]
         (testing "Creating a patch sends a patch to the other side."
           (reset! ref "foo")
-          (a/<! state)
-          (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}]
+          (a/>! sync :doit)
+          (is (= {:action :sync
+                  :shadow {:content "foo" :n 1 :m 0}
+                  :backup {:content "" :n 0 :m 0}
+                  :edits-queue [{:m 0 :diff {:+ [[-1 \f \o \o]], :- []}}]}
+                 (a/<! state)))
+          (is (= {:n 0
+                  :edits [{:m 0 :diff (diff/diff "" "foo")}]}
                  (a/<! out))))
 
         (testing "Other side sends a patch back for new ref change."
-          (a/>! in [{:n 1 :m 0 :diff (diff/diff "foo" "foobar")}])
-          (a/<! state)
+          (a/>! in {:n 1 :edits [{:m 0 :diff (diff/diff "foo" "foobar")}]})
+          (is (= {:shadow {:content "foobar" :n 1 :m 1}
+                  :backup {:content "foo" :n 1 :m 0}
+                  :edits-queue []
+                  :action :data}
+                 (a/<! state)))
           ;; Here, we look at sending something out so we know that the ref has changed
           (is (= "foobar" @ref)))))))
 
 (deftest duplicate-packet
   (let [{:keys [in out ref sync state]} (generate-entangle :foo)
-        called (atom 0)]
-    (add-watch ref :watcher (fn [_ _ _ _] (swap! called inc)))
+        called (atom 0)
+        expected {:action :data
+                  :shadow {:content "foobar" :n 0 :m 1}
+                  :backup {:content "" :n 0 :m 0}
+                  :edits-queue []}]
     (test-async
       (a/go
         (testing "Sends first packet and is received"
-          (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foobar")}])
-          (a/<! state)
+          (a/>! in {:n 0 :edits [{:m 0 :diff (diff/diff "" "foobar")}]})
+          (is (= expected (a/<! state)))
           (is (= "foobar" @ref)))
         (testing "Sending duplicate packet is ignored"
-          (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foobar")}])
-          (a/<! state)
-          (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foobar")}])
-          (a/<! state)
-          (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foobar")}])
-          (a/<! state)
-          (is (= 1 @called)))))))
+          (a/>! in {:n 0 :edits [{:m 0 :diff (diff/diff "" "foobar")}]})
+          (is (= expected (a/<! state)))
+          (a/>! in {:n 0 :edits [{:m 0 :diff (diff/diff "" "foobar")}]})
+          (is (= expected (a/<! state))))))))
 
 
 ;; TODO: clean up this test -- it's ugly as hell
@@ -73,82 +109,65 @@
       (a/go
         (testing "Lost outbound packets queue up diffs"
           (reset! ref "foo")
-          (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}]
+          (a/>! sync :now)
+          (is (= {:n 0 :edits [{:m 0 :diff (diff/diff "" "foo")}]}
                  (a/<! out)))
           (is (= {:action :sync
-                  :snapshot "foo"
                   :shadow {:n 1 :m 0 :content "foo"}
                   :backup {:n 0 :m 0 :content ""}
-                  :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}]}
+                  :edits-queue [{:m 0 :diff (diff/diff "" "foo")}]}
                  (a/<! state))))
 
         (testing "queue up more changes"
           (reset! ref "foobar")
-          (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}
-                  {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}]
+          (a/>! sync :now)
+          (is (= {:n 0 :edits [{:m 0 :diff (diff/diff "" "foo")}
+                               {:m 1 :diff (diff/diff "foo" "foobar")}]}
                  (a/<! out)))
           (is (= {:action :sync
-                  :snapshot "foobar"
                   :shadow {:n 2 :m 0 :content "foobar"}
                   :backup {:n 1 :m 0 :content "foo"}
-                  :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}
-                                {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}]}
+                  :edits-queue [{:m 0 :diff (diff/diff "" "foo")}
+                                {:m 1 :diff (diff/diff "foo" "foobar")}]}
                  (a/<! state))))
 
-        (testing "queueing up baz"
-          (reset! ref "foobarbaz")
-          (is (= [{:n 0 :m 0 :diff (diff/diff "" "foo")}
-                  {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}
-                  {:n 0 :m 2 :diff (diff/diff "foobar" "foobarbaz")}]
-                 (a/<! out)))
-          (is (= {:action :sync
-                  :snapshot "foobarbaz"
-                  :shadow {:n 3 :m 0 :content "foobarbaz"}
+        (testing "When acknowledged along with changes, queue empties out"
+          (a/>! in {:n 2 :edits [{ :m 0 :diff (diff/diff "foobar" "foobarbaz")}]})
+          (is (= {:action :data
+                  :shadow {:n 2 :m 1 :content "foobarbaz"}
                   :backup {:n 2 :m 0 :content "foobar"}
-                  :edits-queue [{:n 0 :m 0 :diff (diff/diff "" "foo")}
-                                {:n 0 :m 1 :diff (diff/diff "foo" "foobar")}
-                                {:n 0 :m 2 :diff (diff/diff "foobar" "foobarbaz")}]}
-                 (a/<! state))))
-
-        (testing "When acknowledged, queue empties out"
-          (a/>! in [{:n 3 :m 0 :diff (diff/diff "foobarbaz" "foobarbazqux")}])
-          (is (= {:action :diff
-                  :snapshot "foobarbaz"
-                  :shadow {:n 3 :m 1 :content "foobarbazqux"}
-                  :backup {:n 3 :m 0 :content "foobarbaz"}
                   :edits-queue []}
                  (a/<! state)))
-          (is (= {:action :sync
-                  :snapshot "foobarbazqux"
-                  :shadow {:n 4 :m 1 :content "foobarbazqux"}
-                  :backup {:n 3 :m 1 :content "foobarbazqux"}
-                  :edits-queue [{:n 1 :m 3 :diff {:+ [] :- []}}]}
-                 (a/<! state)))
-          (is (= [{:n 1 :m 3 :diff (diff/diff "" "")}]
-                 (a/<! out))))))))
+          (is (= @ref "foobarbaz")))))))
 
 (deftest lost-returning-packet
   (let [{:keys [in out ref sync state]} (generate-entangle :foo)]
     (test-async
       (a/go
-        (testing "Queuing up first change"
-          (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foo")}])
+        (testing "Queuing up first change."
+          (a/>! in {:n 0 :edits [{:m 0 :diff (diff/diff "" "foo")}]})
           (a/<! state)  ;; write in
-          (a/<! state)  ;; swap -> update snapshot
-          (a/>! sync :waow)
-          (is (= [{:n 1 :m 0 :diff (diff/diff "" "")}]
-                 (a/<! out)))
-          (a/<! state)
-          (is (= "foo" @ref)))
+          (is (= "foo" @ref))
 
-        #_(testing "Recovers after lost return packet"
-          (a/>! in [{:n 0 :m 0 :diff (diff/diff "" "foo")}
-                    {:n 0 :m 1 :diff (diff/diff "foo" "bar")}])
-          (a/<! state)
+          ;; Trigger a sync, and pretend it never gets acknowledged
           (a/>! sync :waow)
-          (is (= [{:n 2 :m 0 :diff (diff/diff "" "")}]
+          (is (= {:n 1 :edits [{ :m 0 :diff (diff/diff "" "")}]}
                  (a/<! out)))
-          (is (= "bar" @ref)))))))
+          (a/<! state))
+
+        (testing "Server sends duplicate packet and gets ignored"
+          (a/>! in {:n 0 :edits [{:m 0 :diff (diff/diff "" "foo")}
+                                 {:m 1 :diff (diff/diff "foo" "bar")}]})
+          (is (= {:action :data
+                  :shadow {:content "bar" :n 0 :m 2}
+                  ;; NOTE: this backup is effectively useless because it's n/m is wron
+                  :backup {:content "foo" :n 1 :m 1}
+                  :edits-queue []}
+                 (a/<! state)))
+          (is (= "bar" @ref))
+          (a/>! sync :waow)
+          (is (= {:n 2 :edits [{:m 0 :diff (diff/diff "" "")}]}
+                 (a/<! out))))))))
 
 
 (defn- random-chars
@@ -169,7 +188,7 @@
      (lazy-seq (random-strings length)))))
 
 (deftest two-way-fuzz-testing
-  (let [iterations 2
+  (let [iterations 100
         str-len 5
         entangle-A (generate-entangle :a)
         entangle-B (generate-entangle :b)
@@ -177,7 +196,11 @@
         b-done (a/chan 1)]
     ;; discard state information -- we don't care
     (a/go-loop []
-      (a/alts! [(:state entangle-A) (:state entangle-B)])
+      (let [[val ch ] (a/alts! [(:state entangle-A) (:state entangle-B)])
+            name (condp = ch
+                     (:state entangle-A) "A"
+                     (:state entangle-B) "B")]
+        #_(println name ":" val))
       (recur))
 
     ;; connect friends
@@ -187,23 +210,26 @@
     (a/go (doseq [val (take iterations (random-strings str-len))]
             (reset! (:ref entangle-A) val)
             (a/<! (a/timeout (rand-int 10)))
-            (a/>! (:sync entangle-A) :much-wow)
+            (a/>! (:sync entangle-A) :now)
             (a/<! (a/timeout (rand-int 10))))
           (a/close! a-done))
 
     (a/go (doseq [val (take iterations (random-strings str-len))]
             (reset! (:ref entangle-B) val)
-            (a/<! (a/timeout (rand-int 100)))
-            (a/>! (:sync entangle-B) :much-amaze)
-            (a/<! (a/timeout (rand-int 100))))
+            (a/<! (a/timeout (rand-int 15)))
+            (a/>! (:sync entangle-B) :now)
+            (a/<! (a/timeout (rand-int 15))))
           (a/close! b-done))
 
     (test-async
       (a/go
         (a/<! a-done)
         (a/<! b-done)
-        ;; trigger one more sync
+        ;; trigger a few more syncs to ensure convergence
         (a/>! (:sync entangle-B) :last-one)
+        (a/>! (:sync entangle-A) :last-one)
+        (a/>! (:sync entangle-B) :last-one)
+        (a/>! (:sync entangle-A) :last-one)
         (is (= @(:ref entangle-A) @(:ref entangle-B)))))))
 
 (deftest concurrent-writes-are-deterministic
