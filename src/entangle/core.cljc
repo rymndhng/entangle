@@ -117,7 +117,7 @@
          shutdown! (fn []
                      (timbre/info id "entangle shutting down... ")
                      (remove-watch ref watch-id)
-                     (doall (map a/close! [data-in data-out sync-ch state-changes-ch]))
+                     (doall (map a/close! [data-in data-out sync-ch]))
                      (when state-changes-ch
                        (a/close! state-changes-ch)))]
      (go-loop [state {:shadow      init-shadow
@@ -142,7 +142,7 @@
                                      (try
                                        (swap! ref apply-all-edits-fuzzy diffs)
                                        [next-state :data]
-                                       (catch Exception e
+                                       (catch #?(:clj Exception :cljs js/Error) e
                                          nil))))))]
 
          (do (when state-changes-ch
