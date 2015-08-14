@@ -6,37 +6,49 @@
             [clojure.string :as string])
   (:require-macros [cljs.core.async.macros :refer [go go-loop]]))
 
-
-(defonce codeMirror (js/CodeMirror
-                      (.getElementById js/document "render-text")
-                      #js {:value "This is the beginning"}
-                           :mode "javascript"
-                           :onChange (fn [from to text next]
-                                       (println "From: " from)
-                                       (println "To: " to))))
-
 (defn log [m] (println m))
 
-(defonce entangle-atom (atom ""))
+;; Some global state objects
+(defonce codeMirror (js/CodeMirror
+                      (.getElementById js/document "render-text")
+                      #js {:value ""
+                           :mode "javascript"
+                           :inputStyle "contenteditable"}))
 
-;; Setup some websocket stuff
+(defonce codeMirrorShadow (atom ""))
+
+(defonce entangle-atom (atom ""))
 (defonce websocket* (atom nil))
+
+(defn to-codemirror-patch
+  "Converts a clj.diff patch into a single replaceRange command."
+  [lookup patch]
+  (let [start-index (first patch)
+        passed      (into [] (take-while #(< % start-index) (keys lookup)))
+        line-no     (count passed)
+        column      (- start-index (last passed))]
+    [(clojure.string/join (rest patch)) {:line line-no :ch column}]))
+
+(defn patch-to-codemirror-diffs [base patches]
+  (let [lines (clojure.string/split-lines base)
+        index (reduce #(conj %1 (+ (last %1) (.-length %2))) [0] lines)
+        lookup (zipmap index lines)]
+    lookup))
 
 (defn start-reactive-textarea [write-ch]
   "Wrapper to setup the textarea to reactively render when 'textarea'
   changes."
-  (let [dom-textarea (.getElementById js/document "render-text")]
-    ;; reactively re-render
-    (add-watch entangle-atom :ui-render
-      (fn [key ref old-state new-state]
-        ;; (timbre/debug "New state:" new-state)
-        (when (not (= @entangle-atom (aget dom-textarea "value")))
-          (.setValue codeMirror new-state))))
 
-    ;; TODO: this is currently buggy and blows up
-    #_(aset dom-textarea "onkeyup"
-      (fn [x]
-        (a/put! write-ch (str (aget dom-textarea "value")))))))
+  ;; TODO: rework this to use patches instead... but I'm lazy for now.
+  (.on codeMirror "changes" (fn [cm changes]
+                              #_(println changes)
+                              (reset! entangle-atom (.getValue cm))))
+
+  #_(go-loop []
+    (a/<! (a/timeout 1000))
+    ;; get diffs and update the range
+    (.setValue codeMirror @entangle-atom)
+    (recur)))
 
 (defn main []
   (let [ws-chan (a/chan 20) ;; buffer changes against external environment
@@ -67,16 +79,18 @@
                         (log (str "WS-ERROR:" e))
                         (a/close! data-in))]
          ["onmessage" (fn [m]
-                        (log (str "GOT:" (aget m "data")))
+                        #_(log (str "GOT:" (aget m "data")))
                         (a/put! ws-chan (aget m "data")))]]))
 
     ;; Setup another go-routine that prepares data for outward flow
     (go-loop []
         (when-let [data (a/<! data-out)]
-          (log (str "Sending diff to ws: " data))
+          #_(log (str "Sending diff to ws: " data))
           (.send @websocket* (pr-str data))
           (recur))
         (log "Writing out closed!"))
+
+    ;; when we send an outbound request, don't send another one until we get one back
 
     ;; do syncing in 500 ms intervals
     ;; Setup a go-loop that sends data whenever a snapshot even thappens
@@ -106,10 +120,10 @@
       #_(aset (.getElementById js/document "render-text") "disabled" nil))
 
     ;; start that textarea
-    (start-reactive-textarea <text-changes)
+    (start-reactive-textarea sync-ch)
 
     ;; debounce changes to the nearest 500 ms
-    (go-loop []
+    #_(go-loop []
       (when-let [init-text (a/<! <text-changes)]
         (->> (loop [text init-text
                     <timeout (a/timeout 32)]
@@ -121,7 +135,7 @@
                    (do
                      (log "Debouncing")
                      (recur content <timeout)))))
-          (reset! entangle-atom))
+          (a/>! sync-ch :do-it))
         (recur)))
 
     (aset js/window "onunload"
