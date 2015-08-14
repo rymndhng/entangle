@@ -43,7 +43,7 @@ goog.require('" module "');"))]
 
 
 ; An entangle is a single atom to sync. This will make interacting with it simpler
-(def entangle-atom (atom ""))
+(def entangle-atom (atom [0]))
 
 ;; Simple web handler
 (defn web-handler [module]
@@ -105,6 +105,12 @@ goog.require('" module "');"))]
                   (a/<! (a/timeout 16))
                   (recur))
                 (timbre/debug "Watching changes closed.")))
+
+            ;; write every ... yea you know
+            (a/go-loop []
+              (a/<! (a/timeout 100))
+              (when (a/>! sync :doit!)
+                (recur)))
 
             ;; Serialize and de-serialize the channels into the websocket
             (let [deserialize (map edn/read-string)

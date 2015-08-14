@@ -15,7 +15,8 @@
                  [compojure "1.3.3"]
 
                  ;; frontend
-                 [hiccup "1.0.5"]]
+                 [hiccup "1.0.5"]
+                 [reagent "0.5.0"]]
 
   :main entangle.daemon
   ;; Contains generated javascripts
