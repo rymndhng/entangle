@@ -1,6 +1,7 @@
 (ns cljs.user
-  (:require [figwheel.client :as fw]
-            [entangle.client :as e]))
+  (:require [figwheel.client :as fw]))
+
+(def dev? true)
 
 (fw/enable-repl-print!)
 
@@ -25,6 +26,3 @@
            ;; the client to focus on
            ;; :build-id "example"
            })
-
-;; Too lazy to press start!
-(e/main)

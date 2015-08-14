@@ -12,45 +12,44 @@
    [clojure.edn :as edn]
    [entangle.core :as e]
    [taoensso.timbre :as timbre]
-   [hiccup.core :as h]))
+   [hiccup.core :as h]
+   [hiccup.element :as he]))
 
 (timbre/set-level! :info)
 
-(def homepage
+(defn template
+  "Takes a single argument: module -- the clojurescript module to load."
+  [module]
   (h/html
     [:html
      [:head
       [:link {:rel "stylesheet" :href "https://maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css"}]
-      ]
+      [:script {:type "text/javascript" :src "public/js/out/goog/base.js"}]
+      [:script {:type "text/javascript" :src "public/js/out/cljs_deps.js"}]
+      (he/javascript-tag (str  "
+if (typeof goog != 'undefined') {
+    goog.require('cljs.user');
+} else { console.warn('ClojureScript could not load :main, did you forget to specify :asset-path?'); };
+
+goog.require('" module "');"))]
      [:body
       [:div {:class "container"}
        [:div {:class "row"}
         [:div {:class "col-xs-12"}
-         [:h1 "Hello, Start Syncing?"]]]
-       [:div {:class "row"}
-        [:div.col-xs-12
-         [:form.form-inline
-          [:div.form-group
-           [:label {:for "form-name"}]
-           [:input.form-control {:id "form-name"
-                                 :type "text" :name "name" :placeholder "Your Name"}]]
-          " "
-          [:input.btn.btn-primary {:id "start-btn" :type "button" :value "Start"}]]]]
+         [:h1 "A Demo Below"]]]
        [:div {:class "row"}
         [:div {:class "col-xs-12"}
-         [:textarea.form-control {:id "render-text" :cols 80 :rows 10 :disabled true}]]
-        ]]
-      [:script {:type "text/javascript" :src "public/js/out/goog/base.js"}]
-      [:script {:type "text/javascript" :src "public/js/app.js"}]]]))
+         [:div#app]]]]]]))
+
 
 ; An entangle is a single atom to sync. This will make interacting with it simpler
 (def entangle-atom (atom ""))
 
 ;; Simple web handler
-(defn web-handler [_]
+(defn web-handler [module]
   {:status 200
    :headers {"content-type" "text/html"}
-   :body homepage})
+   :body (template module)})
 
 (defn cljs-compat-char
   "Serializes data for consumption in CLJS. Converts any clojure rich
@@ -118,7 +117,7 @@
   (params/wrap-params
     (compojure/routes
       (GET "/sync" [] sync-handler)
-      (GET "/" [] web-handler)
+      (GET "/" [module] (web-handler module))
       (route/resources "/public")
       (route/not-found "No such page."))))
 
