@@ -15,7 +15,7 @@
    [hiccup.core :as h]
    [hiccup.element :as he]))
 
-(timbre/set-level! :info)
+(timbre/set-level! :debug)
 
 (defn template
   "Takes a single argument: module -- the clojurescript module to load."
@@ -43,7 +43,7 @@ goog.require('" module "');"))]
 
 
 ; An entangle is a single atom to sync. This will make interacting with it simpler
-(def entangle-atom (atom [0]))
+(def entangle-atom (atom ""))
 
 ;; Simple web handler
 (defn web-handler [module]
@@ -91,26 +91,31 @@ goog.require('" module "');"))]
           (let [data-in  (a/chan)
                 data-out (a/chan)
                 sync     (a/chan (a/dropping-buffer 1))
-                changes  (a/chan)]
+                changes  (a/chan)
+                debounce (a/chan)]
             (timbre/debug "Client connected: " client-id)
 
             (e/start-sync entangle-atom data-in data-out client-id sync changes)
+            (add-watch entangle-atom (gensym client-id) (fn [_ _ _ _ ] (a/put! debounce :watch)))
 
             ;; Controls the frequency of event processing. This is arbitrariliy
             ;; chosen to be 500 ms so that changes can coalesce from multiple
             ;; clients
             (a/go-loop []
-              (if-let [change (a/<! changes)]
-                (do
-                  (a/<! (a/timeout 16))
-                  (recur))
-                (timbre/debug "Watching changes closed.")))
+              (a/<! debounce)
+              (a/<! (a/timeout 16))
+              (a/>! sync :watch)
+              (timbre/warn "Next tiem!")
+              (recur))
 
-            ;; write every ... yea you know
+            ;; (a/go-loop []
+            ;;   (a/timeout 10000)
+            ;;   (a/>! sync :flush)
+            ;;   (recur))
+
             (a/go-loop []
-              (a/<! (a/timeout 100))
-              (when (a/>! sync :doit!)
-                (recur)))
+              (a/<! changes)
+              (recur))
 
             ;; Serialize and de-serialize the channels into the websocket
             (let [deserialize (map edn/read-string)

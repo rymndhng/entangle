@@ -124,29 +124,30 @@
                       :backup      init-shadow
                       :edits-queue []}]
        (timbre/debug id " Start of loop " state)
-       (if-let [[real-next-state action]
+       (if-let [real-next-state
                 (a/alt! sync-ch ([cause ch]
                                  (timbre/debug id " Syncing Cause " cause)
                                  ;; How do we guarantee lock access to @ref
                                  (let [{:keys [edits-queue] :as next-state} (prepare-patch @ref state)
                                        patch {:n (get-in state [:shadow :m]) :edits edits-queue}]
                                    (when (a/>! data-out patch)
-                                     [next-state :sync])))
+                                     (assoc next-state :action :sync))))
                         data-in ([patch ch]
                                  (timbre/debug id " Got data-in: " (pr-str patch))
                                  (when patch
                                    (let [[next-state diffs] (handle-incoming-patch patch state)]
-                                     (when (= next-state state)
-                                       (timbre/warn id " handle-incoming-patch was a no-op!"))
-                                     ;; TODO: should I care or should I swap eagerly
-                                     (try
-                                       (swap! ref apply-all-edits-fuzzy diffs)
-                                       [next-state :data]
-                                       (catch #?(:clj Exception :cljs js/Error) e
-                                         nil))))))]
+                                     (if (= (get-in next-state [:shadow :content])
+                                            (get-in state [:shadow :content]))
+                                       (do
+                                         (timbre/warn id " handle-incoming-patch was a no-op!")
+                                         (assoc next-state :action :no-op))
+                                       ;; TODO: should I care or should I swap eagerly
+                                       (do (try (swap! ref apply-all-edits-fuzzy diffs)
+                                                (catch #?(:clj Exception :cljs js/Error) e nil))
+                                           (assoc next-state :action :data-in)))))))]
 
          (do (when state-changes-ch
-               (a/>! state-changes-ch (assoc real-next-state :action action)))
+               (a/>! state-changes-ch real-next-state))
              (recur real-next-state))
 
          ;; no next state? should shutdown!
